@@ -1,5 +1,9 @@
 # ScrambledSeg
 
+<p align="center">
+  <img src="https://github.com/tristanmanchester/ScrambledSeg/blob/main/scrambled%20seg.png" width="500" height="300">
+</p>
+
 A deep learning-based segmentation pipeline for in situ synchrotron X-ray computed tomography data, demonstrated through copper oxide dissolution studies.
 
 ## Overview
