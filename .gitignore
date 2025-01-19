@@ -1,0 +1,82 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+
+# Virtual Environment
+venv/
+env/
+ENV/
+.env
+.venv
+
+# Data directories
+raw_data/
+processed_data/
+data/
+labels/
+test/
+*.h5
+*.tif
+*.tiff
+
+# Model and training artifacts
+.model_cache/
+lightning_logs/
+logs/
+checkpoints/
+*.ckpt
+*.pt
+*.pth
+*.safetensors
+*.safetensors.index.json
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+.project
+.pydevproject
+.settings/
+
+# OS
+.DS_Store
+Thumbs.db
+*.db
+
+# Jupyter Notebooks
+.ipynb_checkpoints
+*.ipynb
+
+# Visualization outputs
+visualizations/
+plots/
+metrics/
+*.png
+*.jpg
+*.jpeg
+*.pdf
+
+# Additional project-specific files
+metrics.csv
+hparams.yaml
+*.yaml.bak
+*.log

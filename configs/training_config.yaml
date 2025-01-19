@@ -1,0 +1,90 @@
+# Configuration for synchrotron tomography segmentation with TIFF dataset
+
+# Data paths and settings
+data_dir: "raw_data"  # Base directory for data
+processed_data_dir: "processed_data"  # Directory containing split folders with .tiff files
+
+# Model configuration
+model_type: "segformer"  # Type of model to create
+encoder_name: "nvidia/segformer-b4-finetuned-ade-512-512"  # mit_b0, mit_b1, mit_b2, mit_b3, mit_b4, mit_b5
+pretrained: true
+num_classes: 1  # Binary segmentation
+in_channels: 1
+enable_intermediate_supervision: true  # Enable intermediate supervision in SegFormer
+
+# Training parameters
+num_epochs: 100
+batch_size: 8
+img_size: [512, 512]
+enable_mixed_precision: true
+gradient_accumulation_steps: 2
+data_fraction: 1  # Fraction of dataset to use
+
+# Dataloader settings
+dataloader:
+  num_workers: 8
+  persistent_workers: true
+  pin_memory: true
+  cache_size: 500
+
+# Loss function settings
+loss:
+  type: "bcedice"  
+  params:
+    bce_weight: 0.7    # Weight for BCE component
+    dice_weight: 0.3   # Weight for Dice component
+    smooth: 0.1        # Smoothing factor for Dice loss
+
+# Thresholding
+thresholding:
+    threshold: 0.5
+    enable_cleanup: true
+    cleanup_kernel_size: 3
+    cleanup_threshold: 5
+    min_hole_size_factor: 64
+
+# Optimizer parameters
+optimizer:
+  type: AdamW
+  params:
+    lr: 3.0e-5  # Base learning rate
+    weight_decay: 0.01
+
+# Scheduler settings
+scheduler:
+  type: OneCycleLR
+  params:
+    max_lr: 0.00025
+    epochs: 100
+    steps_per_epoch: -1  # Will be set automatically based on dataset size
+    pct_start: 0.4
+    div_factor: 8
+    final_div_factor: 50
+
+
+# Visualization settings
+visualization:
+  num_samples: 3  # Number of samples to visualize per epoch
+  min_coverage: 0.05  # Minimum percentage of white pixels in ground truth
+  dpi: 300  # DPI for saved figures
+  style: seaborn
+  cmap: viridis
+
+# Augmentation parameters
+augmentation:
+    rotate_prob: 0.8
+    rotate_limit: 180
+    rotate_border_mode: "constant"
+    rotate_border_value: 0
+    rotate_mask_border_value: 0
+    flip_prob: 0.5
+    brightness_contrast_prob: 0.5
+    brightness_limit: 0.1
+    contrast_limit: 0.1
+    gamma_prob: 0.5
+    gamma_limit: [90, 110] 
+    gaussian_noise_prob: 0.3
+    gaussian_noise_limit: [0.005,0.02]
+    border_mode: "constant"
+    border_value: 0
+    mask_border_value: 0
