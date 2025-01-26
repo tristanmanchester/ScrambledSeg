@@ -1,7 +1,7 @@
 # ScrambledSeg
 
 <p align="center">
-  <img src="https://github.com/tristanmanchester/ScrambledSeg/blob/main/scrambled%20seg.png" width="500" height="300">
+  <img src="https://github.com/tristanmanchester/ScrambledSeg/blob/main/scrambled%20seg.png" width="500">
 </p>
 
 A deep learning-based segmentation pipeline for in situ synchrotron X-ray computed tomography data, demonstrated through copper oxide dissolution studies.
@@ -18,6 +18,12 @@ This project implements a modified SegFormer architecture to automatically segme
 - Efficient architecture supporting 512³ volume processing
 - Combined BCE and Dice loss function for robust segmentation
 - Support for multiple prediction axes (X, Y, Z)
+
+## Example Training Visualisations
+
+| Epoch 0 Sample | Epoch 13 Sample |
+|:-------------:|:-------------:|
+| <img src="https://github.com/tristanmanchester/ScrambledSeg/blob/main/epoch_0_sample_1.png" width="500"> | <img src="https://github.com/tristanmanchester/ScrambledSeg/blob/main/epoch_13_sample_0.png" width="500"> |
 
 ## Technical Details
 
@@ -37,13 +43,6 @@ This project implements a modified SegFormer architecture to automatically segme
 - CUDA-capable GPU with 8+ GB memory recommended
 
 See `pixi.toml` for complete dependency list.
-
-## Performance
-
-- Achieves >80% MeanIoU on unseen test data
-- Processes 512³ volumes in ~30 seconds
-- Maintains consistent performance across significant morphological changes
-- Successfully handles common synchrotron imaging artifacts
 
 ## Citations
 
