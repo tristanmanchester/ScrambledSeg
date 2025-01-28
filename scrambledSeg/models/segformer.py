@@ -40,58 +40,9 @@ class MiTVariants:
                 return cls.VARIANTS[variant]
         raise ValueError(f"Could not determine MiT variant from model name: {model_name}")
 
-# class RefinementModule(nn.Module):
-#     @staticmethod
-#     def _calculate_optimal_groups(channels: int) -> int:
-#         """Calculate optimal number of groups for GroupNorm.
-        
-#         Args:
-#             channels: Number of input channels
-            
-#         Returns:
-#             Optimal number of groups ensuring 8-16 channels per group
-#         """
-#         # Get all factors of the channel count
-#         factors = [i for i in range(1, channels + 1) if channels % i == 0]
-        
-#         # Calculate channels per group for each possible group count
-#         channels_per_group = [(f, channels // f) for f in factors]
-        
-#         # Filter for options with 8-16 channels per group
-#         valid_options = [(groups, cpg) for groups, cpg in channels_per_group if 8 <= cpg <= 16]
-        
-#         if not valid_options:
-#             # If no perfect options, find closest to 8 channels per group
-#             return max(1, channels // 8)
-        
-#         # Return the option with the most groups (more fine-grained normalization)
-#         return max(valid_options, key=lambda x: x[0])[0]
-
-#     def __init__(self, in_channels: int, out_channels: int):
-#         super().__init__()
-#         mid_channels = in_channels // 2
-#         num_groups = self._calculate_optimal_groups(mid_channels)
-        
-#         logger.info(f"Initializing RefinementModule with:")
-#         logger.info(f"  in_channels={in_channels}")
-#         logger.info(f"  mid_channels={mid_channels}")
-#         logger.info(f"  num_groups={num_groups}")
-#         logger.info(f"  channels_per_group={mid_channels/num_groups}")
-        
-#         self.conv1 = nn.Conv2d(in_channels, mid_channels, kernel_size=3, padding=1)
-#         self.gn1 = nn.GroupNorm(num_groups=num_groups, num_channels=mid_channels)
-#         self.conv2 = nn.Conv2d(mid_channels, out_channels, kernel_size=3, padding=1)
-#         self.dropout = nn.Dropout2d(p=0.1)
-    
-#     def forward(self, x):
-#         x = F.relu(self.gn1(self.conv1(x)))
-#         x = self.dropout(x)
-#         x = self.conv2(x)
-#         return x
-
 class CustomSegformer(nn.Module):
     def __init__(self, encoder_name="nvidia/mit-b0", num_classes=1, pretrained=True, 
-                 ignore_mismatched_sizes=True, dropout_rate=0.1, enable_intermediate_supervision=True):
+                 ignore_mismatched_sizes=True):
         super().__init__()
         
         logger.info(f"Initializing SegFormer with encoder: {encoder_name}")
@@ -108,7 +59,7 @@ class CustomSegformer(nn.Module):
                 ignore_mismatched_sizes=ignore_mismatched_sizes,
                 output_hidden_states=True,
                 cache_dir=cache_dir,
-                local_files_only=True # Added local files only to try local cache first
+                local_files_only=True
             )
            logger.info(f"Successfully loaded model from local cache.")
         except Exception as e:
@@ -119,15 +70,13 @@ class CustomSegformer(nn.Module):
                 num_labels=num_classes,
                 ignore_mismatched_sizes=ignore_mismatched_sizes,
                 output_hidden_states=True,
-                cache_dir=cache_dir # Remove local_files_only to download
+                cache_dir=cache_dir
             )
             logger.info(f"Successfully downloaded and saved model to local cache.")
             
-        
         # Get model configuration and actual encoder channels
         try:
             self.mit_config = MiTVariants.get_config(encoder_name)
-            # Get actual encoder channels from the model
             encoder_hidden_states = self.backbone.encoder.layer_norm
             actual_channels = [layer.normalized_shape[0] for layer in encoder_hidden_states]
             logger.info(f"Using MiT variant with:")
@@ -142,25 +91,11 @@ class CustomSegformer(nn.Module):
             self.mit_config = MiTVariants.VARIANTS['b0']
             self.encoder_channels = self.mit_config.hidden_sizes
         
-        
         # Create decoder components
         hidden_size = self.mit_config.decoder_hidden_size
         self.linear_c = nn.Linear(sum(self.encoder_channels), hidden_size)
         self.linear_fuse = nn.Conv2d(hidden_size, hidden_size, kernel_size=1)
-        
-        # # Add refinement module using the decoder hidden size
-        # self.refinement = RefinementModule(hidden_size, hidden_size)
-        
-        # Final classifier
         self.classifier = nn.Conv2d(hidden_size, num_classes, kernel_size=1)
-        
-        # Add intermediate classifiers if enabled
-        self.enable_intermediate_supervision = enable_intermediate_supervision
-        if enable_intermediate_supervision:
-            self.intermediate_classifiers = nn.ModuleList([
-                nn.Conv2d(channels, num_classes, kernel_size=1)
-                for channels in self.encoder_channels
-            ])
         
         # Modify input conv layer for grayscale
         if pretrained:
@@ -176,19 +111,19 @@ class CustomSegformer(nn.Module):
                 new_conv.bias.data = old_conv.bias.data
                 
             self.backbone.encoder.patch_embeddings[0].proj = new_conv
-            logger.info(f"Successfully modified input conv layer and added refinement modules")
+            logger.info(f"Successfully modified input conv layer")
     
     def _get_features(self, hidden_states):
         batch_size = hidden_states[0].shape[0]
+        target_size = hidden_states[0].shape[2:]
         
-        # Hidden states are already in [B, C, H, W] format
+        # Apply instance normalization to each feature map
         hidden_states = [
             F.instance_norm(state)  # Normalize each channel independently
             for state in hidden_states
         ]
         
-        # Resize to the same size
-        target_size = hidden_states[0].shape[2:]
+        # Resize all feature maps to the same size
         hidden_states = [
             F.interpolate(
                 feature, size=target_size, mode='bilinear', align_corners=False
@@ -219,32 +154,13 @@ class CustomSegformer(nn.Module):
         outputs = self.backbone(pixel_values=x, output_hidden_states=True)
         encoder_features = outputs.hidden_states
         
-        # Get decoder features
+        # Get decoder features and final logits
         decoder_features = self._get_features(encoder_features)
-        # Remove this dropout
-        # decoder_features = self.dropout(decoder_features)
         decoder_features = self.linear_fuse(decoder_features)
-        
-        # Get final logits through classifier
         logits = self.classifier(decoder_features)
         
-        # Handle intermediate supervision if enabled
-        intermediate_preds = []
-        if self.enable_intermediate_supervision and self.training:
-            for i, (feat, classifier) in enumerate(zip(encoder_features, self.intermediate_classifiers)):
-                # Remove dropout here
-                # feat = dropout(feat)
-                pred = classifier(feat)
-                pred = F.interpolate(pred, size=x.shape[-2:], mode='bilinear', align_corners=False)
-                intermediate_preds.append(pred)
+        # Upsample to input size if needed
+        if logits.shape[-2:] != x.shape[-2:]:
+            logits = F.interpolate(logits, size=x.shape[-2:], mode='bilinear', align_corners=False)
         
-        # Remove final dropout
-        # logits = self.dropouts[-1](logits)
-        
-        # Upsample to input size
-        h, w = x.shape[-2:]
-        logits = F.interpolate(logits, size=(h, w), mode='bilinear', align_corners=False)
-        
-        if self.enable_intermediate_supervision and self.training:
-            return logits, intermediate_preds
         return logits

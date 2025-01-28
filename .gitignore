@@ -27,44 +27,64 @@ ENV/
 .env
 .venv
 
-# Data directories
+# Data directories and files
 raw_data/
 processed_data/
-data/
 labels/
 test/
+datasets/
+**/data_cache/
+**/raw_volumes/
+**/processed_volumes/
 *.h5
 *.tif
 *.tiff
+*.nii
+*.nii.gz
+*.dcm
+*.dicom
 
 # Model and training artifacts
 .model_cache/
 lightning_logs/
 logs/
 checkpoints/
+wandb/
 *.ckpt
 *.pt
 *.pth
 *.safetensors
 *.safetensors.index.json
+*.onnx
 
 # IDE
 .idea/
-.vscode/
-*.swp
-*.swo
 .project
 .pydevproject
 .settings/
 
-# OS
+# OS-specific
 .DS_Store
 Thumbs.db
-*.db
+desktop.ini
+
+# Editor and IDE
+.vscode/
+*.swp
+*.swo
+*~
 
 # Jupyter Notebooks
 .ipynb_checkpoints
 *.ipynb
+
+# Local development
+*.env
+.env.local
+config.local.yaml
+
+# Test files
+predict_volume.py
 
 # Visualization outputs
 visualizations/

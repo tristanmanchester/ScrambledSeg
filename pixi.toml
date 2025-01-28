@@ -14,6 +14,7 @@ python = "3.10.*"  # Being explicit about Python version
 seaborn = ">=0.13.2,<0.14"
 kiwisolver = ">=1.4.7,<2"
 pytz = ">=2024.2,<2025"
+pytest = ">=8.3.4,<9"
 
 [pypi-dependencies]
 torch = {version = ">=2.0.0", index = "https://download.pytorch.org/whl/cu118"}  # Changed to cu118
