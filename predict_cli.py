@@ -1,13 +1,12 @@
-"""Command-line interface for running multi-axis prediction on tomographic volumes."""
+"""Command-line interface for running predictions on H5 volumes and TIFF images."""
 import argparse
 import logging
 import torch
 from pathlib import Path
 import time
-import h5py
 
 from scrambledSeg.models.segformer import CustomSegformer
-from scrambledSeg.prediction.predictor import TomoPredictor, PredictionMode, EnsembleMethod
+from scrambledSeg.prediction.predictor import Predictor, PredictionMode, EnsembleMethod
 
 # Set up logging
 logging.basicConfig(level=logging.INFO)
@@ -22,12 +21,12 @@ def get_prediction_mode(mode_str):
     }
     return mode_map[mode_str.upper()]
 
-def process_file(input_path, output_path, predictor, dataset_path):
-    """Process a single H5 file."""
+def process_file(input_path, output_path, predictor, dataset_path=None):
+    """Process a single file."""
     logger.info(f"Processing {input_path}")
     start_time = time.time()
     
-    predictor.predict_volume(
+    predictor.predict(
         input_path=str(input_path),
         output_path=str(output_path),
         dataset_path=dataset_path
@@ -38,18 +37,37 @@ def process_file(input_path, output_path, predictor, dataset_path):
     logger.info(f"Results saved to {output_path}")
 
 def main():
-    parser = argparse.ArgumentParser(description="Run predictions on H5 files using trained model.")
-    parser.add_argument("input", type=str, help="Path to H5 file or directory containing H5 files")
-    parser.add_argument("checkpoint", type=str, help="Path to model checkpoint")
+    parser = argparse.ArgumentParser(
+        description="Run predictions on H5 volumes or TIFF images using trained model."
+    )
+    parser.add_argument("input", type=str, 
+                       help="Path to input file or directory (supports .h5, .tif, .tiff)")
+    parser.add_argument("checkpoint", type=str, 
+                       help="Path to model checkpoint")
+    
+    # H5-specific arguments
     parser.add_argument("--data_path", type=str, default="/data",
                        help="Path within H5 file where data is stored (default: /data)")
     parser.add_argument("--mode", type=str, choices=['SINGLE_AXIS', 'THREE_AXIS', 'TWELVE_AXIS'],
-                       default='SINGLE_AXIS', help="Prediction mode")
+                       default='SINGLE_AXIS', help="Prediction mode for H5 volumes")
+    parser.add_argument("--ensemble_method", type=str, choices=['mean', 'voting'],
+                       default='mean', help="Method for combining predictions")
+    
+    # TIFF-specific arguments
+    parser.add_argument("--tile_size", type=int, default=512,
+                       help="Size of tiles for processing large images (default: 512)")
+    parser.add_argument("--tile_overlap", type=int, default=32,
+                       help="Overlap between tiles (default: 64)")
+    
+    # General arguments
     parser.add_argument("--output_dir", type=str, default="predictions",
                        help="Output directory for predictions (default: predictions)")
-    parser.add_argument("--batch_size", type=int, default=8, help="Batch size for prediction")
+    parser.add_argument("--batch_size", type=int, default=8,
+                       help="Batch size for prediction")
     parser.add_argument("--device", type=str, default=None,
                        help="Device to use (default: cuda if available, else cpu)")
+    parser.add_argument("--precision", type=str, choices=['32', '16', 'bf16'], default='bf16',
+                       help="Precision to use for inference (default: bf16)")
     
     args = parser.parse_args()
     
@@ -60,7 +78,7 @@ def main():
     # Model configuration
     model_config = {
         "encoder_name": "nvidia/segformer-b4-finetuned-ade-512-512",
-        "num_classes": 1
+        "num_classes": 4  # Multi-phase segmentation with 4 classes (0, 1, 2, 3)
     }
     
     # Create output directory
@@ -89,30 +107,36 @@ def main():
             logger.info("Successfully loaded state dict with strict=False")
     
     # Create predictor
-    predictor = TomoPredictor(
+    predictor = Predictor(
         model=model,
         prediction_mode=get_prediction_mode(args.mode),
-        ensemble_method=EnsembleMethod.MEAN,
+        ensemble_method=args.ensemble_method,
         batch_size=args.batch_size,
-        device=args.device
+        device=args.device,
+        tile_size=args.tile_size,
+        tile_overlap=args.tile_overlap,
+        precision=args.precision
     )
     
     input_path = Path(args.input)
     if input_path.is_file():
         # Process single file
-        if not input_path.suffix == '.h5':
-            raise ValueError(f"Input file must be an H5 file, got {input_path}")
-        output_path = output_dir / f"{input_path.stem}_prediction.h5"
+        if input_path.suffix.lower() not in ['.h5', '.tif', '.tiff']:
+            raise ValueError(f"Input file must be H5 or TIFF, got {input_path}")
+        output_path = output_dir / f"{input_path.stem}_prediction{input_path.suffix}"
         process_file(input_path, output_path, predictor, args.data_path)
     else:
         # Process directory
         h5_files = list(input_path.glob("*.h5"))
-        if not h5_files:
-            raise ValueError(f"No H5 files found in directory {input_path}")
+        tiff_files = list(input_path.glob("*.tif")) + list(input_path.glob("*.tiff"))
+        all_files = h5_files + tiff_files
         
-        for h5_file in h5_files:
-            output_path = output_dir / f"{h5_file.stem}_prediction.h5"
-            process_file(h5_file, output_path, predictor, args.data_path)
+        if not all_files:
+            raise ValueError(f"No H5 or TIFF files found in directory {input_path}")
+        
+        for file_path in all_files:
+            output_path = output_dir / f"{file_path.stem}_prediction{file_path.suffix}"
+            process_file(file_path, output_path, predictor, args.data_path)
 
 if __name__ == "__main__":
     main()

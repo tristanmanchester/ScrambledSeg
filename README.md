@@ -16,7 +16,8 @@ This project implements a modified SegFormer architecture to automatically segme
 - Data preprocessing pipeline to transform lab XCT data for synchrotron conditions
 - Comprehensive data augmentation using Albumentations library
 - Efficient architecture supporting 512³ volume processing
-- Combined BCE and Dice loss function for robust segmentation
+- Combined BCE and Dice loss for binary segmentation, and Cross-Entropy with Dice loss for multi-phase segmentation
+- Support for both binary and multi-phase (multiple class) segmentation
 - Support for multiple prediction axes (X, Y, Z)
 
 ## Example Training Visualisations
@@ -32,6 +33,19 @@ This project implements a modified SegFormer architecture to automatically segme
 - Supports CUDA acceleration
 - Processes 16-bit grayscale input data
 - Configurable via YAML for experiment parameters
+
+## Multi-Phase Segmentation
+
+ScrambledSeg now supports multi-phase segmentation, allowing simultaneous identification of multiple materials or phases in tomographic data:
+
+- **Label Format**: Supports integer-valued labels (0, 1, 2, 3, etc.) where each value represents a distinct phase or material
+- **Configuration**: Set `num_classes` in the training configuration to the number of phases (including background)
+- **Loss Function**: Automatically switches to an optimized combination of Cross-Entropy and multi-class Dice loss
+- **Metrics**: Uses multi-class IoU (Jaccard Index) for accurate performance tracking
+- **Visualization**: Improved visualization with class-appropriate colormaps to distinguish different phases
+- **Inference**: Multi-phase prediction produces integer-valued output maps with class indices
+
+This extension makes ScrambledSeg suitable for complex material science applications including battery materials, multi-phase alloys, and other composite material systems.
 
 ## Requirements
 
@@ -85,10 +99,37 @@ The script expects:
 Training is configured via YAML files in the `configs/` directory:
 
 ```bash
-pixi run -- python -m synchrotron_segmentation.training.train configs/synchrotron_config_slices.yaml
+pixi run python -m scrambledSeg.training.train .\configs\training_config.yaml
 ```
 
 The configuration file specifies training parameters, data paths, and model architecture settings.
+
+#### Multi-Phase Segmentation Configuration
+
+To train a model for multi-phase segmentation:
+
+1. Modify the config file to specify multiple classes:
+   ```yaml
+   # Set number of classes (including background)
+   num_classes: 4  # For a 4-phase segmentation (0, 1, 2, 3)
+   
+   # Update loss function settings
+   loss:
+     type: "crossentropy_dice"  # Multi-class loss
+     params:
+       ce_weight: 0.7      # Weight for Cross Entropy component
+       dice_weight: 0.3    # Weight for Dice component
+       smooth: 0.1         # Smoothing factor for Dice loss
+   
+   # Update visualization settings
+   visualization:
+     cmap: tab10  # Discrete colormap suitable for multi-class visualizations
+   ```
+
+2. Prepare your training data with integer labels:
+   - Each pixel should have a single integer value representing its class
+   - Classes should be consecutive integers starting from 0 (background)
+   - The preprocessing pipeline will automatically detect and handle multi-class labels
 
 Training outputs are saved in several locations:
 - Model checkpoints: `lightning_logs/version_*/checkpoints/*.ckpt`
@@ -120,6 +161,34 @@ Available prediction modes:
 - `SINGLE_AXIS`: Standard single-direction prediction
 - `THREE_AXIS`: Predictions from X, Y, and Z directions
 - `TWELVE_AXIS`: Enhanced multi-angle predictions for maximum accuracy
+
+#### Multi-Phase Prediction
+
+For multi-phase segmentation models:
+
+1. The prediction pipeline automatically detects multi-class models based on the `num_classes` parameter
+2. Multi-phase predictions are output as integer-valued arrays where each value represents a distinct class
+3. The output format depends on file type:
+   - H5 files: Integer arrays with class indices (0, 1, 2, 3, etc.)
+   - TIFF files: Integer arrays with class indices, saved as uint8/uint16
+4. For visualization, use a discrete colormap (like 'tab10', 'Set1', or 'viridis') to view the results
+
+Example visualization in Python:
+```python
+import matplotlib.pyplot as plt
+import h5py
+
+# Load multi-phase predictions
+with h5py.File('prediction.h5', 'r') as f:
+    pred = f['/data'][:]
+
+# Plot with a discrete colormap
+plt.figure(figsize=(10, 10))
+plt.imshow(pred[50], cmap='tab10')  # View slice 50
+plt.colorbar(label='Phase')
+plt.title('Multi-Phase Segmentation')
+plt.savefig('multi_phase_result.png')
+```
 
 ## Citations
 

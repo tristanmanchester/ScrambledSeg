@@ -182,13 +182,38 @@ class VisualizationCallback(pl.Callback):
                             if isinstance(prediction, tuple):
                                 prediction = prediction[0]
                             
-                            # Save visualization
+                            # Save visualization - pass class values if available from dataset
+                            class_values = None
+                            
+                            # Get the validation dataloader safely
+                            try:
+                                # For PyTorch Lightning >= 2.0
+                                if hasattr(trainer, 'val_dataloaders'):
+                                    val_dataloader = trainer.val_dataloaders
+                                # For PyTorch Lightning < 2.0
+                                elif hasattr(trainer, 'datamodule') and hasattr(trainer.datamodule, 'val_dataloader'):
+                                    val_dataloader = trainer.datamodule.val_dataloader()
+                                # Direct access from module
+                                elif hasattr(pl_module, '_val_dataloader'):
+                                    val_dataloader = pl_module._val_dataloader
+                                
+                                # Access class_values if available
+                                if hasattr(val_dataloader, 'dataset') and hasattr(val_dataloader.dataset, 'class_values'):
+                                    class_values = val_dataloader.dataset.class_values
+                                elif isinstance(val_dataloader, list) and len(val_dataloader) > 0:
+                                    if hasattr(val_dataloader[0].dataset, 'class_values'):
+                                        class_values = val_dataloader[0].dataset.class_values
+                            except Exception as e:
+                                logger.warning(f"Could not access dataset class values: {e}")
+                                class_values = None
+                            
                             save_path = str(self.plots_dir / f'val_epoch_{trainer.current_epoch}_sample_{i}.png')
                             self.visualizer.visualize_prediction(
                                 image=image,
                                 mask=mask,
                                 prediction=prediction,
-                                save_path=save_path
+                                save_path=save_path,
+                                class_values=class_values
                             )
                             plt.close('all')  # Clean up after each visualization
                             
@@ -227,13 +252,23 @@ class VisualizationCallback(pl.Callback):
                         if isinstance(prediction, tuple):
                             prediction = prediction[0]
                         
-                        # Save visualization
+                        # Save visualization - pass class values if available from dataset
+                        class_values = None
+                        try:
+                            # Check if dataloader has dataset attribute and class_values
+                            if hasattr(train_loader, 'dataset') and hasattr(train_loader.dataset, 'class_values'):
+                                class_values = train_loader.dataset.class_values
+                        except Exception as e:
+                            logger.warning(f"Could not access training dataset class values: {e}")
+                            class_values = None
+                        
                         save_path = str(self.plots_dir / f'epoch_{trainer.current_epoch}_sample_{i}.png')
                         self.visualizer.visualize_prediction(
                             image=image,
                             mask=mask,
                             prediction=prediction,
-                            save_path=save_path
+                            save_path=save_path,
+                            class_values=class_values
                         )
                         plt.close('all')  # Clean up after each visualization
                         

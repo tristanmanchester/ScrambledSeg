@@ -61,8 +61,11 @@ class SegformerTrainer(pl.LightningModule):
         self.validation_step_outputs = []
         
         # Store threshold parameters
-        self.threshold_params = threshold_params or {
-            'threshold': 0.5,  # Simplified threshold for BCE+Dice
+        # Update to reflect the new configuration structure
+        self.prediction_params = threshold_params or {
+            'enable_cleanup': True,
+            'cleanup_kernel_size': 3,
+            'cleanup_threshold': 5,
             'min_hole_size_factor': 64
         }
         
@@ -94,8 +97,8 @@ class SegformerTrainer(pl.LightningModule):
             )
         )
         
-        # Set up metrics
-        self.iou_metric = torchmetrics.JaccardIndex(task="binary", num_classes=1)
+        # Set up metrics for multi-class segmentation
+        self.iou_metric = torchmetrics.JaccardIndex(task="multiclass", num_classes=4)
         
         # Save hyperparameters only if not in test mode
         if not test_mode:
@@ -114,60 +117,90 @@ class SegformerTrainer(pl.LightningModule):
         else:
             logger.info("Test mode: Skipping hyperparameter logging")
 
-    def get_binary_predictions(self, predictions: torch.Tensor, targets: torch.Tensor) -> torch.Tensor:
-        """Get binary predictions using thresholding and optional morphological cleanup.
+    def get_predicted_labels(self, predictions: torch.Tensor, targets: torch.Tensor) -> torch.Tensor:
+        """Get predicted class labels using argmax and optional cleanup.
         
         Args:
             predictions: Model predictions (B, C, H, W)
             targets: Target masks, used for device placement
             
         Returns:
-            Binary predictions tensor (B, C, H, W)
+            Class prediction tensor (B, H, W) with integer class labels
         """
         # Input validation
         if predictions.ndim != 4:
             raise ValueError(f"Expected 4D predictions tensor, got shape {predictions.shape}")
         
-        # Check if sigmoid needs to be applied
-        if predictions.min() < 0 or predictions.max() > 1:
-            predictions = torch.sigmoid(predictions)
+        # Apply softmax to get class probabilities
+        if predictions.dtype in [torch.float16, torch.bfloat16, torch.float32]:
+            # Get predicted class indices using argmax of softmax probabilities
+            pred_probs = F.softmax(predictions, dim=1)
+            pred_classes = torch.argmax(pred_probs, dim=1)  # B, H, W with class indices
+        else:
+            # If predictions are already processed, just use argmax
+            pred_classes = torch.argmax(predictions, dim=1)  # B, H, W with class indices
         
-        # Apply threshold
-        threshold = self.threshold_params.get('threshold', 0.5)
-        binary_pred = (predictions > threshold).float()
+        # Ensure we have long type for class indices
+        pred_classes = pred_classes.long()
+        
+        # Convert to one-hot encoding for potential cleanup
+        num_classes = predictions.size(1)
+        pred_one_hot = F.one_hot(pred_classes, num_classes).permute(0, 3, 1, 2).float()  # B, C, H, W
         
         # Apply morphological cleanup if enabled
-        if self.threshold_params.get('enable_cleanup', True):
-            kernel_size = self.threshold_params.get('cleanup_kernel_size', 3)
-            cleanup_threshold = self.threshold_params.get('cleanup_threshold', 5)
+        # Use prediction_params if available, otherwise fall back to threshold_params for backward compatibility
+        prediction_params = getattr(self, 'prediction_params', None) or getattr(self, 'threshold_params', {}) or {}
+        if prediction_params.get('enable_cleanup', True):
+            kernel_size = prediction_params.get('cleanup_kernel_size', 3)
+            cleanup_threshold = prediction_params.get('cleanup_threshold', 5)
             
             # Ensure kernel size is odd
             kernel_size = max(3, kernel_size + (kernel_size + 1) % 2)
             pad_size = kernel_size // 2
             
             # Create cleanup kernel
-            cleanup_kernel = torch.ones(1, 1, kernel_size, kernel_size, 
-                                      device=predictions.device)
+            cleanup_kernel = torch.ones(1, 1, kernel_size, kernel_size, device=predictions.device)
             
-            # Apply morphological operation
-            padded_binary = F.pad(binary_pred, 
-                                (pad_size, pad_size, pad_size, pad_size),
-                                mode='constant', 
-                                value=0)
-            connected = F.conv2d(padded_binary, cleanup_kernel, padding=0)
+            # Process each class separately
+            cleaned_pred_one_hot = torch.zeros_like(pred_one_hot)
             
-            # Calculate threshold based on kernel size
-            auto_threshold = (kernel_size * kernel_size) / 2
-            final_threshold = min(cleanup_threshold, auto_threshold)
+            for c in range(num_classes):
+                class_mask = pred_one_hot[:, c:c+1, :, :]  # Keep dim for conv2d: B, 1, H, W
+                
+                # Apply morphological operation
+                padded_mask = F.pad(class_mask, 
+                                    (pad_size, pad_size, pad_size, pad_size),
+                                    mode='constant', 
+                                    value=0)
+                connected = F.conv2d(padded_mask, cleanup_kernel, padding=0)
+                
+                # Calculate threshold based on kernel size
+                auto_threshold = (kernel_size * kernel_size) / 2
+                final_threshold = min(cleanup_threshold, auto_threshold)
+                
+                # Apply cleanup for this class
+                cleaned_mask = torch.where(connected >= final_threshold, 
+                                          class_mask, 
+                                          torch.zeros_like(class_mask))
+                
+                cleaned_pred_one_hot[:, c:c+1, :, :] = cleaned_mask
             
-            # Apply cleanup
-            final_pred = torch.where(connected >= final_threshold, 
-                                   binary_pred, 
-                                   torch.zeros_like(binary_pred))
+            # Convert back to class indices
+            # If a pixel has no class after cleanup, assign the original prediction
+            cleaned_sum = torch.sum(cleaned_pred_one_hot, dim=1, keepdim=True)
+            valid_mask = (cleaned_sum > 0).squeeze(1)
             
-            return final_pred
+            # Where valid, get argmax of cleaned predictions
+            cleaned_classes = torch.argmax(cleaned_pred_one_hot, dim=1)
+            
+            # Combine: use cleaned where valid, otherwise use original prediction
+            # Handle boolean mask by ensuring both sides of where() have the same dtype
+            cleaned_classes = cleaned_classes.to(pred_classes.dtype)
+            final_pred = torch.where(valid_mask, cleaned_classes, pred_classes)
+            
+            return final_pred.long()  # Ensure long type for class indices
         
-        return binary_pred
+        return pred_classes
 
     def forward(self, x):
         """Forward pass."""
@@ -179,11 +212,23 @@ class SegformerTrainer(pl.LightningModule):
         masks = batch['mask']
         
         # Input statistics
+        # Convert masks to float for statistics calculation
+        # For multi-class segmentation, mask coverage is the % of non-background pixels
+        if masks.dtype == torch.long:
+            # For integer class labels, calculate non-background coverage
+            mask_coverage = (masks > 0).float().mean().item()
+        elif masks.dtype == torch.bool:
+            # For boolean masks, convert to float first
+            mask_coverage = masks.float().mean().item()
+        else:
+            # For float masks, can call mean directly
+            mask_coverage = masks.mean().item()
+        
         img_stats = {
             'img_min': images.min().item(),
             'img_max': images.max().item(),
             'img_mean': images.mean().item(),
-            'mask_coverage': masks.mean().item()
+            'mask_coverage': mask_coverage
         }
         self.log_dict({f'input/{k}': v for k, v in img_stats.items()}, on_step=True)
         
@@ -200,20 +245,33 @@ class SegformerTrainer(pl.LightningModule):
             outputs = outputs[0]
         
         # Output statistics
-        output_stats = {
-            'out_min': outputs.min().item(),
-            'out_max': outputs.max().item(),
-            'out_mean': outputs.mean().item(),
-            'out_std': outputs.std().item(),
-            'unique_values': len(torch.unique(outputs)),
-            'zeros_pct': (outputs == 0).float().mean().item() * 100
-        }
+        # Handle different data types and multi-class outputs
+        if outputs.dtype in [torch.float16, torch.bfloat16, torch.float32, torch.float64]:
+            output_stats = {
+                'out_min': outputs.min().item(),
+                'out_max': outputs.max().item(),
+                'out_mean': outputs.mean().item(),
+                'out_std': outputs.std().item(),
+                'unique_values': len(torch.unique(outputs)),
+                'zeros_pct': (outputs == 0).float().mean().item() * 100
+            }
+        else:
+            # For non-float types, convert to float for statistics
+            outputs_float = outputs.float()
+            output_stats = {
+                'out_min': outputs_float.min().item(),
+                'out_max': outputs_float.max().item(),
+                'out_mean': outputs_float.mean().item(),
+                'out_std': outputs_float.std().item(),
+                'unique_values': len(torch.unique(outputs)),
+                'zeros_pct': (outputs == 0).float().mean().item() * 100
+            }
         self.log_dict({f'output/{k}': v for k, v in output_stats.items()}, on_step=True)
         
         # Check for suspicious output patterns
-        if output_stats['unique_values'] < 10:  # Very few unique values
+        if output_stats.get('unique_values', 20) < 10:  # Very few unique values
             logger.warning(f"Low variance in outputs: {output_stats}")
-        if output_stats['zeros_pct'] > 90:  # Mostly zeros
+        if output_stats.get('zeros_pct', 0) > 90:  # Mostly zeros
             logger.warning(f"Output mostly zeros: {output_stats}")
         
         # Check for NaN in outputs
@@ -239,16 +297,42 @@ class SegformerTrainer(pl.LightningModule):
             self.trainer.should_stop = True
             return None
         
-        # Get binary predictions and calculate IoU
-        binary_preds = self.get_binary_predictions(outputs, masks)
-        iou = self.iou_metric(binary_preds, masks)
+        # Get predicted class labels and calculate IoU
+        pred_labels = self.get_predicted_labels(outputs, masks)
         
-        # Binary prediction statistics
+        # For multi-class IoU, we need to ensure targets are in the expected format
+        # IoU metric expects class indices of type long, not one-hot or float
+        masks_for_iou = masks.clone()  # Make a copy to avoid modifying original
+        
+        # The JaccardIndex expects class indices as long type
+        if masks_for_iou.dim() == 4 and masks_for_iou.size(1) == 1:
+            masks_for_iou = masks_for_iou.squeeze(1)  # B, H, W
+        
+        # Convert to long type for IoU calculation
+        if masks_for_iou.dtype != torch.long:
+            if masks_for_iou.dtype == torch.bool:
+                # Boolean tensors need to be converted to long carefully
+                masks_for_iou = masks_for_iou.long()
+            else:
+                # Float tensors should be rounded to nearest integer
+                masks_for_iou = torch.round(masks_for_iou).long()
+            
+        iou = self.iou_metric(pred_labels, masks_for_iou)
+        
+        # Class prediction statistics (for multiple classes)
+        num_classes = outputs.size(1)
+        
+        # Always convert to float for statistics
+        pred_labels_float = pred_labels.float()
+        
+        # Make sure to convert boolean tensor to float before calling mean()
         pred_stats = {
-            'pred_coverage': binary_preds.mean().item(),
-            'pred_zeros': (binary_preds == 0).float().mean().item() * 100,
-            'pred_ones': (binary_preds == 1).float().mean().item() * 100
+            'pred_coverage': (pred_labels_float > 0).float().mean().item(),  # Non-background coverage
         }
+        
+        # Add per-class statistics
+        for c in range(num_classes):
+            pred_stats[f'class_{c}_pct'] = (pred_labels == c).float().mean().item() * 100
         self.log_dict({f'pred/{k}': v for k, v in pred_stats.items()}, on_step=True)
         
         # Log main metrics
@@ -272,11 +356,56 @@ class SegformerTrainer(pl.LightningModule):
         if isinstance(outputs, tuple):
             outputs = outputs[0]
         
-        # Calculate loss
-        loss = self.criterion(outputs, masks)
+        # Calculate loss - ensure masks are in the correct format
+        # For CrossEntropyLoss, masks should be (B, H, W) with class indices as Long type
+        # For BCEDiceLoss, masks should be (B, 1, H, W) with values in [0,1] as Float type
         
-        # Calculate IoU
-        iou = self.iou_metric(self.get_binary_predictions(outputs, masks), masks)
+        # Pre-process masks for CrossEntropyLoss
+        masks_for_loss = masks.clone()  # Make a copy to avoid modifying original
+        
+        # For our multi-class segmentation with CrossEntropyDiceLoss
+        if isinstance(self.criterion, torch.nn.CrossEntropyLoss) or hasattr(self.criterion, 'ce_criterion'):
+            # This is multi-class loss - masks should be class indices (B, H, W)
+            if masks_for_loss.dim() == 4 and masks_for_loss.size(1) == 1:
+                masks_for_loss = masks_for_loss.squeeze(1)  # Remove channel dimension
+            
+            # Explicitly convert float labels to long/integer type
+            # Handle both binary (0/1) and multi-class cases
+            if masks_for_loss.dtype != torch.long:
+                masks_for_loss = masks_for_loss.long()
+        
+        # Calculate loss
+        try:
+            loss = self.criterion(outputs, masks_for_loss)
+        except RuntimeError as e:
+            # Provide more diagnostic information on error
+            logger.error(f"Error in validation loss calculation: {e}")
+            logger.error(f"Output shape: {outputs.shape}, dtype: {outputs.dtype}")
+            logger.error(f"Masks shape: {masks_for_loss.shape}, dtype: {masks_for_loss.dtype}")
+            logger.error(f"Unique mask values: {torch.unique(masks_for_loss)}")
+            # Re-raise to stop training
+            raise
+        
+        # Calculate IoU for multi-class
+        pred_labels = self.get_predicted_labels(outputs, masks)
+        
+        # Ensure masks are in the expected format for IoU calculation
+        masks_for_iou = masks.clone()  # Make a copy to avoid modifying original
+        
+        # JaccardIndex expects class indices as long type
+        if masks_for_iou.dim() == 4 and masks_for_iou.size(1) == 1:
+            masks_for_iou = masks_for_iou.squeeze(1)  # B, H, W
+        
+        # Convert to long type for IoU calculation
+        if masks_for_iou.dtype != torch.long:
+            if masks_for_iou.dtype == torch.bool:
+                # Boolean tensors need to be converted to long carefully
+                masks_for_iou = masks_for_iou.long()
+            else:
+                # Float tensors should be rounded to nearest integer
+                masks_for_iou = torch.round(masks_for_iou).long()
+            
+        iou = self.iou_metric(pred_labels, masks_for_iou)
         
         # Log metrics
         self.log('val_loss', loss, on_step=True, on_epoch=True, prog_bar=True, sync_dist=True)

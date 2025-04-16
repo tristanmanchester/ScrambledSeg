@@ -45,7 +45,7 @@ class TomoDataset:
         return data
     
     def save_h5(self, data: np.ndarray, path: Union[str, Path], dataset_path: str = "/data"):
-        """Save uint16 predictions to h5 file.
+        """Save predictions to h5 file, handling both binary and multi-class data.
         
         Args:
             data: numpy array to save
@@ -54,20 +54,43 @@ class TomoDataset:
         """
         logger.info(f"Saving predictions to {path}")
         
-        # Convert to uint16 if needed
-        if data.dtype != np.uint16:
-            logger.warning(f"Converting {data.dtype} to uint16...")
-            if data.dtype == np.float32 or data.dtype == np.float64:
-                # Assume normalized [0, 1] data
-                data = (data * 65535).astype(np.uint16)
-            else:
-                data = data.astype(np.uint16)
+        # Check if this is multi-class data (multiple channels in axis 1)
+        is_multi_channel = data.ndim > 3 and data.shape[1] > 1
         
-        # Create parent directory if needed
-        Path(path).parent.mkdir(parents=True, exist_ok=True)
-        
-        with h5py.File(path, "w") as f:
-            f.create_dataset(dataset_path, data=data, dtype=np.uint16)
+        if is_multi_channel:
+            # Multi-class data - get class indices using argmax
+            logger.info(f"Detected multi-class data with {data.shape[1]} classes")
+            # If shape is (B, C, H, W), first check if B is 1, then apply argmax along C
+            if data.ndim == 4 and data.shape[0] == 1:
+                # Remove batch dimension first
+                data = data[0]
+                # Apply argmax along channel dimension (axis 0)
+                data = np.argmax(data, axis=0).astype(np.uint8)
+            elif data.ndim == 4:
+                # Apply argmax along channel dimension (axis 1)
+                data = np.argmax(data, axis=1).astype(np.uint8)
+            
+            logger.info(f"Converted to class indices with shape {data.shape}")
+            # Create parent directory if needed
+            Path(path).parent.mkdir(parents=True, exist_ok=True)
+            
+            with h5py.File(path, "w") as f:
+                f.create_dataset(dataset_path, data=data, dtype=np.uint8)
+        else:
+            # Binary data - convert to uint16 if needed
+            if data.dtype != np.uint16:
+                logger.warning(f"Converting {data.dtype} to uint16...")
+                if data.dtype == np.float32 or data.dtype == np.float64:
+                    # Assume normalized [0, 1] data
+                    data = (data * 65535).astype(np.uint16)
+                else:
+                    data = data.astype(np.uint16)
+            
+            # Create parent directory if needed
+            Path(path).parent.mkdir(parents=True, exist_ok=True)
+            
+            with h5py.File(path, "w") as f:
+                f.create_dataset(dataset_path, data=data, dtype=np.uint16)
         
         logger.info(f"Saved volume of shape {data.shape}")
         logger.info(f"Value range: [{data.min()}, {data.max()}]")
@@ -96,21 +119,29 @@ class TomoDataset:
         return slice_tensor
     
     def denormalize_prediction(self, pred: torch.Tensor) -> np.ndarray:
-        """Convert prediction tensor to binary uint16.
+        """Convert prediction tensor to appropriate output format.
         
         Args:
-            pred: Prediction tensor from model, shape (1, 1, H, W)
+            pred: Prediction tensor from model, shape (1, C, H, W)
             
         Returns:
-            Binary prediction as uint16 array
+            For binary segmentation: Binary prediction as uint16 array
+            For multi-class segmentation: Class indices as uint8 array
         """
-        # Remove batch and channel dimensions
-        pred_np = pred.squeeze().cpu().numpy()
-        
-        # Convert to binary prediction
-        pred_binary = (pred_np > 0.5).astype(np.uint16) * 65535
-        
-        return pred_binary
+        # Check if multi-class segmentation (more than 1 channel)
+        if pred.size(1) > 1:
+            # Multi-class - get argmax
+            pred_np = torch.argmax(pred, dim=1).cpu().numpy()
+            return pred_np.astype(np.uint8)
+        else:
+            # Binary segmentation
+            # Remove batch and channel dimensions
+            pred_np = pred.squeeze().cpu().numpy()
+            
+            # Convert to binary prediction
+            pred_binary = (pred_np > 0.5).astype(np.uint16) * 65535
+            
+            return pred_binary
     
     def get_slice_stats(self, slice_data: np.ndarray) -> dict:
         """Get statistics for a slice.

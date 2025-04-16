@@ -83,6 +83,40 @@ class SynchrotronDataset(Dataset):
         self.data_shape = sample['image'].shape
         self.label_shape = sample['mask'].shape
         
+        # Scan multiple samples to identify all possible class values
+        # Use a subset of files if the dataset is very large
+        max_scan_files = min(50, self.n_samples)  # Scan at most 50 files
+        scan_indices = np.linspace(0, self.n_samples-1, max_scan_files, dtype=int)  # Sample throughout the dataset
+        
+        all_unique_values = set()
+        # Add values from first sample
+        all_unique_values.update(np.unique(sample['mask']))
+        
+        # Scan additional samples if needed
+        for idx in scan_indices[1:]:  # Skip first sample as we already processed it
+            try:
+                # Load label file directly to save time
+                label = np.ascontiguousarray(tifffile.imread(str(self.label_files[idx])))
+                # Add unique values to set
+                file_unique = np.unique(label)
+                all_unique_values.update(file_unique)
+            except Exception as e:
+                logger.warning(f"Could not scan file {self.label_files[idx]} for class values: {e}")
+        
+        # Convert set to sorted array
+        all_unique_values = np.array(sorted(all_unique_values))
+        
+        # Check if we're working with multi-class data
+        if len(all_unique_values) > 2 or (len(all_unique_values) == 2 and not np.array_equal(all_unique_values, np.array([0, 1]))):
+            logger.info(f"Detected multi-class segmentation with {len(all_unique_values)} unique values across dataset: {all_unique_values}")
+            self.multi_class = True
+        else:
+            self.multi_class = False
+            logger.info("Detected binary segmentation masks")
+            
+        # Store the unique class values for reference
+        self.class_values = all_unique_values
+        
         # Log dataset information
         logger.info(f"Data shape: {self.data_shape}")
         logger.info(f"Label shape: {self.label_shape}")
@@ -105,7 +139,30 @@ class SynchrotronDataset(Dataset):
         """Load a sample from the TIFF file."""
         # Load data and labels, ensuring contiguous memory layout
         data = np.ascontiguousarray(tifffile.imread(str(self.data_files[idx]))).astype(np.float32)
-        label = np.ascontiguousarray(tifffile.imread(str(self.label_files[idx]))).astype(np.float32)
+        
+        # Load label - check for multi-class as integers
+        label_raw = np.ascontiguousarray(tifffile.imread(str(self.label_files[idx])))
+        
+        # Check unique values to detect multi-class labels
+        unique_values = np.unique(label_raw)
+        if len(unique_values) > 2 or (len(unique_values) == 2 and not np.array_equal(unique_values, np.array([0, 1]))):
+            # This looks like a multi-class label (more than 2 values or values other than 0,1)
+            # Convert to integer type for class indices
+            label = label_raw.astype(np.int64)
+            
+            # Set multi_class flag to True for the whole dataset if detected
+            if not hasattr(self, 'multi_class'):
+                self.multi_class = True
+                logger.info(f"Detected multi-class segmentation with {len(unique_values)} unique values: {unique_values}")
+                
+        else:
+            # This is a binary label
+            label = label_raw.astype(np.float32)
+            
+            # Set multi_class flag to False for the whole dataset if detected
+            if not hasattr(self, 'multi_class'):
+                self.multi_class = False
+                logger.info("Detected binary segmentation masks")
 
         # Ensure correct shapes
         if data.ndim == 2:
@@ -159,9 +216,34 @@ class SynchrotronDataset(Dataset):
     def _process_image(self, image: np.ndarray, is_mask: bool = False) -> torch.Tensor:
         """Process an image array into the required format"""
         if not is_mask and self.normalize:
+            # Normalize input images to [0,1] range
             image = (image - image.min()) / (image.max() - image.min() + 1e-6)
+            image = image.astype(np.float32)
+        elif is_mask:
+            # Check if we have multi-class data
+            if hasattr(self, 'multi_class') and self.multi_class:
+                # For multi-class segmentation, ALWAYS ensure masks are integer type
+                # No normalization for masks in multi-class segmentation
+                # Explicitly convert any float values to integers
+                if image.dtype == np.float32 or image.dtype == np.float64:
+                    # Round float labels to nearest integer
+                    image = np.round(image).astype(np.int64)
+                elif image.dtype == np.bool_:
+                    # Convert boolean to int (0/1)
+                    image = image.astype(np.int64)
+                else:
+                    # Just convert to int64 if already an integer type
+                    image = image.astype(np.int64)  # Use int64 (long) for PyTorch's CrossEntropyLoss
+            else:
+                # For binary segmentation, ensure masks are float32
+                if image.dtype == np.bool_:
+                    # Boolean masks need to be converted to float explicitly
+                    image = image.astype(np.float32)
+                else:
+                    image = image.astype(np.float32)
+        else:
+            image = image.astype(np.float32)
             
-        image = image.astype(np.float32)
         if image.ndim == 2:
             image = np.expand_dims(image, 0)
         
@@ -175,11 +257,17 @@ class SynchrotronDataset(Dataset):
          # Convert tensors to numpy arrays
          image_np = image.numpy()[0] # Remove the extra dimension
          mask_np = mask.numpy()[0]
-
+         
+         # Store original mask dtype to preserve it after transforms
+         original_mask_dtype = mask_np.dtype
+         
          transformed = self.transform(image=image_np, mask=mask_np)
          
+         # Ensure mask has the right data type (important for int64 masks in multi-class segmentation)
+         transformed_mask = transformed['mask'].astype(original_mask_dtype)
+         
          image = torch.from_numpy(np.expand_dims(transformed['image'], axis=0))
-         mask = torch.from_numpy(np.expand_dims(transformed['mask'], axis=0))
+         mask = torch.from_numpy(np.expand_dims(transformed_mask, axis=0))
          return image, mask
     
     def __len__(self) -> int:

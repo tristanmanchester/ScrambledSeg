@@ -100,3 +100,12 @@ metrics.csv
 hparams.yaml
 *.yaml.bak
 *.log
+
+# Project-specific files
+slice_generator.py
+
+# Testing
+.pytest_cache/
+
+# Pixi
+.pixi/

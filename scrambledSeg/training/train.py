@@ -11,7 +11,7 @@ from pytorch_lightning.callbacks import ModelCheckpoint, LearningRateMonitor
 from scrambledSeg.models.segformer import CustomSegformer
 from scrambledSeg.data.datasets import SynchrotronDataset
 from scrambledSeg.training.trainer import SegformerTrainer
-from scrambledSeg.losses import BCEDiceLoss  # Updated import
+from scrambledSeg.losses import create_loss  # Import loss factory function instead
 from scrambledSeg.visualization.callbacks import VisualizationCallback
 from scrambledSeg.transforms import create_train_transform, create_val_transform
 from tqdm import tqdm
@@ -91,26 +91,30 @@ def create_trainer_module(config: dict, train_dataloader, val_dataloader):
         encoder_name=config.get('encoder_name', 'nvidia/mit-b0'),
         num_classes=config.get('num_classes', 1),
         pretrained=config.get('pretrained', True),
-        ignore_mismatched_sizes=True,
-        dropout_rate=config.get('regularization', {}).get('dropout_rate', 0.1),
-        enable_intermediate_supervision=config.get('enable_intermediate_supervision', True)
+        ignore_mismatched_sizes=True
     )
     
-    # Create BCE+Dice loss function
+    # Create loss function using factory
     loss_config = config.get('loss', {})
-    criterion = BCEDiceLoss(
-        bce_weight=loss_config.get('params', {}).get('bce_weight', 0.5),
-        dice_weight=loss_config.get('params', {}).get('dice_weight', 0.5),
-        smooth=loss_config.get('params', {}).get('smooth', 1.0)
-    )
+    loss_type = loss_config.get('type', 'crossentropy_dice')
+    
+    # Handle different parameter names between loss types
+    params = loss_config.get('params', {}).copy()
+    
+    # Rename parameters for CrossEntropyDiceLoss if needed
+    if loss_type == 'crossentropy_dice' and 'ce_weight' not in params and 'bce_weight' in params:
+        params['ce_weight'] = params.pop('bce_weight')
+        
+    criterion = create_loss(loss_type, **params)
 
-    # Create threshold config with all cleanup parameters
-    threshold_config = {
-        'threshold': config.get('thresholding', {}).get('threshold', 0.5),
-        'enable_cleanup': config.get('thresholding', {}).get('enable_cleanup', True),
-        'cleanup_kernel_size': config.get('thresholding', {}).get('cleanup_kernel_size', 3),
-        'cleanup_threshold': config.get('thresholding', {}).get('cleanup_threshold', 5),
-        'min_hole_size_factor': config.get('thresholding', {}).get('min_hole_size_factor', 64)
+    # Create prediction config with all cleanup parameters 
+    # Use 'prediction' section if available, fall back to 'thresholding' for compatibility
+    source_config = config.get('prediction', config.get('thresholding', {}))
+    prediction_config = {
+        'enable_cleanup': source_config.get('enable_cleanup', True),
+        'cleanup_kernel_size': source_config.get('cleanup_kernel_size', 3),
+        'cleanup_threshold': source_config.get('cleanup_threshold', 5),
+        'min_hole_size_factor': source_config.get('min_hole_size_factor', 64)
     }
 
     # Create optimizer
@@ -147,7 +151,7 @@ def create_trainer_module(config: dict, train_dataloader, val_dataloader):
         visualization=config.get('visualization', {}),
         log_dir=config.get('log_dir', 'logs'),
         test_mode=config.get('test_mode', False),
-        threshold_params=threshold_config
+        threshold_params=prediction_config
     )
     
     return trainer_module
@@ -187,7 +191,7 @@ def main(config_path):
     trainer_config = {
         'accelerator': 'gpu' if torch.cuda.is_available() else 'cpu',
         'devices': 1,
-        'precision': '16-mixed',
+        'precision': 'bf16-mixed',
         'gradient_clip_val': config.get('regularization', {}).get('gradient_clip_val', 1.0),
         'gradient_clip_algorithm': 'norm',
         'accumulate_grad_batches': config.get('gradient_accumulation_steps', 1),

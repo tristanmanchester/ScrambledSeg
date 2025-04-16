@@ -8,7 +8,7 @@ processed_data_dir: "processed_data"  # Directory containing split folders with 
 model_type: "segformer"  # Type of model to create
 encoder_name: "nvidia/segformer-b4-finetuned-ade-512-512"  # mit_b0, mit_b1, mit_b2, mit_b3, mit_b4, mit_b5
 pretrained: true
-num_classes: 1  # Binary segmentation
+num_classes: 4  # Multi-phase segmentation with classes 0, 1, 2, 3
 in_channels: 1
 enable_intermediate_supervision: true  # Enable intermediate supervision in SegFormer
 
@@ -16,7 +16,7 @@ enable_intermediate_supervision: true  # Enable intermediate supervision in SegF
 num_epochs: 100
 batch_size: 8
 img_size: [512, 512]
-enable_mixed_precision: true
+enable_mixed_precision: true  # Using BF16 mixed precision
 gradient_accumulation_steps: 2
 data_fraction: 1  # Fraction of dataset to use
 
@@ -29,19 +29,18 @@ dataloader:
 
 # Loss function settings
 loss:
-  type: "bcedice"  
+  type: "crossentropy_dice"  # Multi-class loss
   params:
-    bce_weight: 0.7    # Weight for BCE component
-    dice_weight: 0.3   # Weight for Dice component
-    smooth: 0.1        # Smoothing factor for Dice loss
+    ce_weight: 0.7      # Weight for Cross Entropy component
+    dice_weight: 0.3    # Weight for Dice component
+    smooth: 0.1         # Smoothing factor for Dice loss
 
-# Thresholding
-thresholding:
-    threshold: 0.5
-    enable_cleanup: true
-    cleanup_kernel_size: 3
-    cleanup_threshold: 5
-    min_hole_size_factor: 64
+# Prediction settings (for multi-class segmentation)
+prediction:
+    enable_cleanup: true     # Apply cleanup for each class
+    cleanup_kernel_size: 3   # Kernel size for morphological operations
+    cleanup_threshold: 5     # Threshold for connected components
+    min_hole_size_factor: 64 # Minimum hole size to keep
 
 # Optimizer parameters
 optimizer:
@@ -65,14 +64,14 @@ scheduler:
 # Visualization settings
 visualization:
   num_samples: 3  # Number of samples to visualize per epoch
-  min_coverage: 0.05  # Minimum percentage of white pixels in ground truth
+  min_coverage: 0.05  # Minimum percentage of non-background pixels in ground truth
   dpi: 300  # DPI for saved figures
   style: seaborn
-  cmap: viridis
+  cmap: tab10  # Discrete colormap for multi-class segmentation
 
 # Augmentation parameters
 augmentation:
-    rotate_prob: 0.8
+    rotate_prob: 0
     rotate_limit: 180
     rotate_border_mode: "constant"
     rotate_border_value: 0
