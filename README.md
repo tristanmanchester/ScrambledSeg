@@ -190,10 +190,19 @@ plt.title('Multi-Phase Segmentation')
 plt.savefig('multi_phase_result.png')
 ```
 
-## Citations
+## Citation
 
 If you use this code in your research, please cite our paper:
 
+```bibtex
+@article{manchester2025leveraging,
+  title={Leveraging Modified Ex Situ Tomography Data for Segmentation of In Situ Synchrotron X-Ray Computed Tomography},
+  author={Manchester, Tristan and Anders, Adam and Spadotto, Julio and Eccleston, Hannah and Beavan, William and Arcis, Hugues and Connolly, Brian J.},
+  journal={arXiv preprint arXiv:2504.19200},
+  year={2025},
+  doi={10.48550/arXiv.2504.19200}
+}
 ```
-Manchester, T., & Connolly, B. J. (2025). Leveraging Modified Ex Situ Tomography Data for 
-Segmentation of In Situ Synchrotron X-Ray Computed Tomography.
+You can also cite it as:
+
+Manchester, T., Anders, A., Spadotto, J., Eccleston, H., Beavan, W., Arcis, H., & Connolly, B. J. (2025). Leveraging Modified Ex Situ Tomography Data for Segmentation of In Situ Synchrotron X-Ray Computed Tomography. arXiv:2504.19200. https://doi.org/10.48550/arXiv.2504.19200
