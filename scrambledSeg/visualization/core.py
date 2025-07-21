@@ -387,3 +387,258 @@ class SegmentationVisualizer:
             plt.close(fig)
             return None
         return fig
+    
+    def plot_comprehensive_metrics(
+        self,
+        save_path: Optional[str] = None,
+        window_size: int = 200,
+        dpi: Optional[int] = None
+    ) -> Optional[plt.Figure]:
+        """Plot comprehensive training metrics including all performance measures."""
+        if not os.path.exists(self.metrics_file):
+            logger.warning("No metrics file found for comprehensive plotting.")
+            return None
+            
+        df = pd.read_csv(self.metrics_file)
+        
+        # Convert columns to numeric
+        for col in df.columns:
+            if col in ['step', 'epoch']:
+                continue
+            df[col] = pd.to_numeric(df[col].replace('', float('nan')), errors='coerce')
+        
+        if len(df) < 2:
+            logger.warning("Not enough data points for comprehensive plotting")
+            return None
+        
+        # Create figure with subplots
+        fig, ((ax1, ax2), (ax3, ax4)) = plt.subplots(2, 2, figsize=(16, 12))
+        
+        # Colors for different metrics
+        train_color = 'tab:blue'
+        val_color = 'tab:orange'
+        
+        # 1. Loss curves
+        if 'train_loss' in df.columns and not df['train_loss'].isna().all():
+            smoothed_train_loss = df['train_loss'].rolling(window=min(window_size, len(df)), min_periods=1).mean()
+            ax1.plot(df['step'], smoothed_train_loss, color=train_color, label='Train Loss', alpha=0.8, linewidth=2)
+            
+            if 'val_loss' in df.columns and not df['val_loss'].isna().all():
+                val_data = df[['step', 'val_loss']].dropna()
+                ax1.scatter(val_data['step'], val_data['val_loss'], color=val_color, 
+                          label='Val Loss', alpha=0.9, s=20, marker='o')
+        
+        ax1.set_title('Training & Validation Loss')
+        ax1.set_xlabel('Step')
+        ax1.set_ylabel('Loss')
+        ax1.legend()
+        ax1.grid(True, alpha=0.3)
+        
+        # 2. IoU and Dice metrics
+        metrics_to_plot = [('iou', 'IoU'), ('dice', 'Dice')]
+        for metric, label in metrics_to_plot:
+            train_col = f'train_{metric}'
+            val_col = f'val_{metric}'
+            
+            if train_col in df.columns and not df[train_col].isna().all():
+                smoothed_train = df[train_col].rolling(window=min(window_size, len(df)), min_periods=1).mean()
+                ax2.plot(df['step'], smoothed_train, color=train_color, 
+                        label=f'Train {label}', alpha=0.8, linewidth=2,
+                        linestyle='-' if metric == 'iou' else '--')
+                
+                if val_col in df.columns and not df[val_col].isna().all():
+                    val_data = df[['step', val_col]].dropna()
+                    ax2.scatter(val_data['step'], val_data[val_col], color=val_color, 
+                              label=f'Val {label}', alpha=0.9, s=20, 
+                              marker='o' if metric == 'iou' else 's')
+        
+        ax2.set_title('IoU & Dice Metrics')
+        ax2.set_xlabel('Step')
+        ax2.set_ylabel('Score')
+        ax2.legend()
+        ax2.grid(True, alpha=0.3)
+        
+        # 3. Precision and Recall
+        precision_recall_metrics = [('precision', 'Precision'), ('recall', 'Recall')]
+        for metric, label in precision_recall_metrics:
+            train_col = f'train_{metric}'
+            val_col = f'val_{metric}'
+            
+            if train_col in df.columns and not df[train_col].isna().all():
+                smoothed_train = df[train_col].rolling(window=min(window_size, len(df)), min_periods=1).mean()
+                ax3.plot(df['step'], smoothed_train, color=train_color, 
+                        label=f'Train {label}', alpha=0.8, linewidth=2,
+                        linestyle='-' if metric == 'precision' else '--')
+                
+                if val_col in df.columns and not df[val_col].isna().all():
+                    val_data = df[['step', val_col]].dropna()
+                    ax3.scatter(val_data['step'], val_data[val_col], color=val_color, 
+                              label=f'Val {label}', alpha=0.9, s=20,
+                              marker='o' if metric == 'precision' else 's')
+        
+        ax3.set_title('Precision & Recall')
+        ax3.set_xlabel('Step')
+        ax3.set_ylabel('Score')
+        ax3.legend()
+        ax3.grid(True, alpha=0.3)
+        
+        # 4. F1 and Specificity
+        f1_spec_metrics = [('f1', 'F1-Score'), ('specificity', 'Specificity')]
+        for metric, label in f1_spec_metrics:
+            train_col = f'train_{metric}'
+            val_col = f'val_{metric}'
+            
+            if train_col in df.columns and not df[train_col].isna().all():
+                smoothed_train = df[train_col].rolling(window=min(window_size, len(df)), min_periods=1).mean()
+                ax4.plot(df['step'], smoothed_train, color=train_color, 
+                        label=f'Train {label}', alpha=0.8, linewidth=2,
+                        linestyle='-' if metric == 'f1' else '--')
+                
+                if val_col in df.columns and not df[val_col].isna().all():
+                    val_data = df[['step', val_col]].dropna()
+                    ax4.scatter(val_data['step'], val_data[val_col], color=val_color, 
+                              label=f'Val {label}', alpha=0.9, s=20,
+                              marker='o' if metric == 'f1' else 's')
+        
+        ax4.set_title('F1-Score & Specificity')
+        ax4.set_xlabel('Step')
+        ax4.set_ylabel('Score')
+        ax4.legend()
+        ax4.grid(True, alpha=0.3)
+        
+        plt.tight_layout()
+        
+        if save_path:
+            plt.savefig(save_path, dpi=dpi or self.dpi, bbox_inches='tight')
+            plt.close(fig)
+            return None
+        return fig
+    
+    def plot_per_class_metrics(
+        self,
+        save_path: Optional[str] = None,
+        window_size: int = 200,
+        class_names: Optional[List[str]] = None,
+        dpi: Optional[int] = None
+    ) -> Optional[plt.Figure]:
+        """Plot per-class performance metrics."""
+        if not os.path.exists(self.metrics_file):
+            logger.warning("No metrics file found for per-class plotting.")
+            return None
+            
+        df = pd.read_csv(self.metrics_file)
+        
+        # Convert columns to numeric
+        for col in df.columns:
+            if col in ['step', 'epoch']:
+                continue
+            df[col] = pd.to_numeric(df[col].replace('', float('nan')), errors='coerce')
+        
+        if len(df) < 2:
+            logger.warning("Not enough data points for per-class plotting")
+            return None
+        
+        # Default class names if not provided - auto-detect from columns
+        if class_names is None:
+            # Extract class numbers from column names like 'train_iou_class_0', 'val_precision_class_1', etc.
+            import re
+            class_pattern = r'_class_(\d+)'
+            class_numbers = set()
+            for col in df.columns:
+                match = re.search(class_pattern, col)
+                if match:
+                    class_numbers.add(int(match.group(1)))
+            
+            if class_numbers:
+                max_class = max(class_numbers)
+                class_names = [f'Class_{i}' for i in range(max_class + 1)]
+            else:
+                # Fallback to 2 classes if no per-class columns found
+                class_names = ['Class_0', 'Class_1']
+        
+        # Find available per-class metrics
+        per_class_columns = [col for col in df.columns if any(f'_{cls.lower()}' in col for cls in class_names)]
+        
+        if not per_class_columns:
+            logger.warning("No per-class metrics found in data")
+            return None
+        
+        # Create figure with subplots for each metric type
+        metric_types = ['iou', 'precision', 'recall', 'f1']
+        fig, axes = plt.subplots(2, 2, figsize=(16, 12))
+        axes = axes.flatten()
+        
+        colors = plt.cm.Set3(np.linspace(0, 1, len(class_names)))
+        
+        for idx, metric_type in enumerate(metric_types):
+            ax = axes[idx]
+            
+            for class_idx, (class_name, color) in enumerate(zip(class_names, colors)):
+                train_col = f'train_{metric_type}_{class_name.lower()}'
+                val_col = f'val_{metric_type}_{class_name.lower()}'
+                
+                # Plot training metric
+                if train_col in df.columns and not df[train_col].isna().all():
+                    smoothed_train = df[train_col].rolling(window=min(window_size, len(df)), min_periods=1).mean()
+                    ax.plot(df['step'], smoothed_train, color=color, 
+                           label=f'{class_name} (Train)', alpha=0.8, linewidth=2)
+                
+                # Plot validation metric
+                if val_col in df.columns and not df[val_col].isna().all():
+                    val_data = df[['step', val_col]].dropna()
+                    ax.scatter(val_data['step'], val_data[val_col], color=color, 
+                             label=f'{class_name} (Val)', alpha=0.9, s=15, marker='o')
+            
+            ax.set_title(f'Per-Class {metric_type.upper()}')
+            ax.set_xlabel('Step')
+            ax.set_ylabel(metric_type.capitalize())
+            ax.legend(bbox_to_anchor=(1.05, 1), loc='upper left')
+            ax.grid(True, alpha=0.3)
+        
+        plt.tight_layout()
+        
+        if save_path:
+            plt.savefig(save_path, dpi=dpi or self.dpi, bbox_inches='tight')
+            plt.close(fig)
+            return None
+        return fig
+    
+    def plot_training_efficiency(
+        self,
+        save_path: Optional[str] = None,
+        dpi: Optional[int] = None
+    ) -> Optional[plt.Figure]:
+        """Plot training efficiency metrics like learning rate, gradient norms, timing."""
+        if not os.path.exists(self.metrics_file):
+            logger.warning("No metrics file found for efficiency plotting.")
+            return None
+            
+        # For now, create a placeholder that could be extended when progress metrics are logged
+        # This would need to be enhanced when the progress metrics are actually being logged to CSV
+        
+        fig, ((ax1, ax2), (ax3, ax4)) = plt.subplots(2, 2, figsize=(16, 12))
+        
+        # Placeholder plots - these would be populated with actual progress metrics
+        ax1.text(0.5, 0.5, 'Learning Rate\n(To be implemented with\nprogress metric logging)', 
+                ha='center', va='center', transform=ax1.transAxes)
+        ax1.set_title('Learning Rate Schedule')
+        
+        ax2.text(0.5, 0.5, 'Gradient Norms\n(To be implemented with\nprogress metric logging)', 
+                ha='center', va='center', transform=ax2.transAxes)
+        ax2.set_title('Gradient Statistics')
+        
+        ax3.text(0.5, 0.5, 'Training Speed\n(To be implemented with\nprogress metric logging)', 
+                ha='center', va='center', transform=ax3.transAxes)
+        ax3.set_title('Samples per Second')
+        
+        ax4.text(0.5, 0.5, 'Memory Usage\n(To be implemented with\nprogress metric logging)', 
+                ha='center', va='center', transform=ax4.transAxes)
+        ax4.set_title('GPU Memory Usage')
+        
+        plt.tight_layout()
+        
+        if save_path:
+            plt.savefig(save_path, dpi=dpi or self.dpi, bbox_inches='tight')
+            plt.close(fig)
+            return None
+        return fig

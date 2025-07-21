@@ -16,6 +16,7 @@ kiwisolver = ">=1.4.7,<2"
 pytz = ">=2024.2,<2025"
 pytest = ">=8.3.4,<9"
 scikit-image = ">=0.25.2,<0.26"
+psutil = ">=7.0.0,<8"
 
 [pypi-dependencies]
 torch = {version = ">=2.0.0", index = "https://download.pytorch.org/whl/cu118"}  # Changed to cu118
@@ -31,6 +32,7 @@ imagecodecs = "*"
 tifffile = "*"
 pyyaml = "*"
 tqdm = "*"
+rich = ">=13.0.0"
 pandas = "*"
 matplotlib = "*"
 seaborn = "*"

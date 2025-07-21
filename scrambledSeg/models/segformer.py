@@ -59,7 +59,8 @@ class CustomSegformer(nn.Module):
                 ignore_mismatched_sizes=ignore_mismatched_sizes,
                 output_hidden_states=True,
                 cache_dir=cache_dir,
-                local_files_only=True
+                local_files_only=True,
+                use_safetensors=True  # Force safetensors for security (PyTorch < 2.6)
             )
            logger.info(f"Successfully loaded model from local cache.")
         except Exception as e:
@@ -70,7 +71,8 @@ class CustomSegformer(nn.Module):
                 num_labels=num_classes,
                 ignore_mismatched_sizes=ignore_mismatched_sizes,
                 output_hidden_states=True,
-                cache_dir=cache_dir
+                cache_dir=cache_dir,
+                use_safetensors=True  # Force safetensors for security (PyTorch < 2.6)
             )
             logger.info(f"Successfully downloaded and saved model to local cache.")
             

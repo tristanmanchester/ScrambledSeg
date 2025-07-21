@@ -24,12 +24,14 @@ class VisualizationCallback(pl.Callback):
         min_coverage: float = 0.05,
         dpi: int = 300,
         enable_memory_tracking: bool = False,
-        visualizer: Optional[SegmentationVisualizer] = None
+        visualizer: Optional[SegmentationVisualizer] = None,
+        num_classes: int = 2
     ):
         """Initialize callback."""
         super().__init__()
         
         self.num_samples = num_samples
+        self.num_classes = num_classes
         
         # Set up directories
         self.output_dir = Path(output_dir)
@@ -60,9 +62,24 @@ class VisualizationCallback(pl.Callback):
     def _update_metrics_csv(self, metrics: Dict[str, float], epoch: int) -> None:
         """Update metrics CSV file with new values."""
         try:
-            # Create metrics file if it doesn't exist
+            # Create metrics file if it doesn't exist with comprehensive columns
             if not os.path.exists(self.metrics_file):
-                df = pd.DataFrame(columns=['step', 'epoch', 'train_loss', 'val_loss', 'train_iou', 'val_iou'])
+                columns = [
+                    'step', 'epoch', 
+                    'train_loss', 'val_loss',
+                    'train_iou', 'val_iou',
+                    'train_precision', 'val_precision',
+                    'train_recall', 'val_recall', 
+                    'train_f1', 'val_f1',
+                    'train_dice', 'val_dice',
+                    'train_specificity', 'val_specificity'
+                ]
+                
+                # Add per-class metrics dynamically based on num_classes
+                for metric in ['iou', 'precision', 'recall', 'f1']:
+                    for class_idx in range(self.num_classes):
+                        columns.extend([f'train_{metric}_class_{class_idx}', f'val_{metric}_class_{class_idx}'])
+                df = pd.DataFrame(columns=columns)
                 df.to_csv(self.metrics_file, index=False)
             
             # Read existing metrics
@@ -87,19 +104,52 @@ class VisualizationCallback(pl.Callback):
                 'epoch': epoch
             }
             
-            # Update metrics that are present
-            if 'loss' in metrics:
-                new_row['train_loss'] = to_float(metrics['loss'])
-            if 'train_iou' in metrics:
-                new_row['train_iou'] = to_float(metrics['train_iou'])
-            if 'val_loss' in metrics:
-                new_row['val_loss'] = to_float(metrics['val_loss'])
-            if 'val_iou' in metrics:
-                new_row['val_iou'] = to_float(metrics['val_iou'])
+            # Map common metric keys
+            metric_mapping = {
+                'loss': 'train_loss',
+                'train_iou': 'train_iou',
+                'val_loss': 'val_loss',
+                'val_iou': 'val_iou'
+            }
             
-            # Append new row using a temporary DataFrame
-            new_df = pd.concat([df, pd.DataFrame([new_row])], ignore_index=True)
-            new_df.to_csv(self.metrics_file, index=False)
+            # Update metrics that are present
+            for metric_key, csv_column in metric_mapping.items():
+                if metric_key in metrics:
+                    new_row[csv_column] = to_float(metrics[metric_key])
+            
+            # Handle additional comprehensive metrics
+            comprehensive_metrics = [
+                'train_precision', 'val_precision',
+                'train_recall', 'val_recall',
+                'train_f1', 'val_f1', 
+                'train_dice', 'val_dice',
+                'train_specificity', 'val_specificity'
+            ]
+            
+            for metric_name in comprehensive_metrics:
+                if metric_name in metrics:
+                    new_row[metric_name] = to_float(metrics[metric_name])
+                    
+            # Handle per-class metrics
+            class_names = ['class_0', 'class_1', 'class_2', 'class_3']
+            metric_types = ['iou', 'precision', 'recall', 'f1']
+            
+            for split in ['train', 'val']:
+                for metric_type in metric_types:
+                    for class_name in class_names:
+                        metric_key = f'{split}_{metric_type}_{class_name}'
+                        if metric_key in metrics:
+                            new_row[metric_key] = to_float(metrics[metric_key])
+            
+            # Append new row using a temporary DataFrame (handle empty values)
+            new_row_df = pd.DataFrame([new_row])
+            
+            # Only concatenate if we have actual data
+            if not new_row_df.empty and not new_row_df.isna().all().all():
+                new_df = pd.concat([df, new_row_df], ignore_index=True)
+                new_df.to_csv(self.metrics_file, index=False)
+            else:
+                logger.debug("Skipping empty metrics row")
             
         except Exception as e:
             logger.error(f"Error updating metrics: {str(e)}")
@@ -113,6 +163,24 @@ class VisualizationCallback(pl.Callback):
                 plt.close('all')  # Clean up all figures
         except Exception as e:
             logger.error(f"Error plotting metrics: {str(e)}")
+    
+    def _safe_plot_comprehensive_metrics(self, window_size: int, save_path: str) -> None:
+        """Thread-safe comprehensive metrics plotting."""
+        try:
+            with plt.ioff():  # Disable interactive mode
+                self.visualizer.plot_comprehensive_metrics(window_size=window_size, save_path=save_path)
+                plt.close('all')  # Clean up all figures
+        except Exception as e:
+            logger.error(f"Error plotting comprehensive metrics: {str(e)}")
+    
+    def _safe_plot_per_class_metrics(self, window_size: int, save_path: str) -> None:
+        """Thread-safe per-class metrics plotting."""
+        try:
+            with plt.ioff():  # Disable interactive mode
+                self.visualizer.plot_per_class_metrics(window_size=window_size, save_path=save_path)
+                plt.close('all')  # Clean up all figures
+        except Exception as e:
+            logger.error(f"Error plotting per-class metrics: {str(e)}")
 
     def on_train_batch_end(self, trainer: pl.Trainer, pl_module: pl.LightningModule, 
                           outputs: Dict[str, torch.Tensor], batch: Any, batch_idx: int) -> None:
@@ -155,10 +223,22 @@ class VisualizationCallback(pl.Callback):
             # Update metrics CSV with validation results
             self._update_metrics_csv({**val_metrics}, trainer.current_epoch)
             
-            # Plot updated metrics
+            # Plot updated metrics - generate multiple plot types
             self._safe_plot_metrics(
                 window_size=200,
                 save_path=str(self.metrics_dir / f'metrics_epoch_{trainer.current_epoch}.png')
+            )
+            
+            # Generate comprehensive metrics plot
+            self._safe_plot_comprehensive_metrics(
+                window_size=200,
+                save_path=str(self.metrics_dir / f'comprehensive_metrics_epoch_{trainer.current_epoch}.png')
+            )
+            
+            # Generate per-class metrics plot
+            self._safe_plot_per_class_metrics(
+                window_size=200,
+                save_path=str(self.metrics_dir / f'per_class_metrics_epoch_{trainer.current_epoch}.png')
             )
 
             # Create visualizations using validation batch

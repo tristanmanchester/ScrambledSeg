@@ -1,14 +1,14 @@
 # Configuration for synchrotron tomography segmentation with TIFF dataset
 
 # Data paths and settings
-data_dir: "raw_data"  # Base directory for data
-processed_data_dir: "processed_data"  # Directory containing split folders with .tiff files
+data_dir: "C:\\Users\\tmanc\\Projects\\MLSegmentation\\data"  # Base directory for data
+processed_data_dir: "processed_data_19-07"  # Directory containing split folders with .tiff files
 
 # Model configuration
 model_type: "segformer"  # Type of model to create
 encoder_name: "nvidia/segformer-b4-finetuned-ade-512-512"  # mit_b0, mit_b1, mit_b2, mit_b3, mit_b4, mit_b5
 pretrained: true
-num_classes: 4  # Multi-phase segmentation with classes 0, 1, 2, 3
+num_classes: 2  # Multi-phase segmentation with classes 0, 1, 2, 3
 in_channels: 1
 enable_intermediate_supervision: true  # Enable intermediate supervision in SegFormer
 

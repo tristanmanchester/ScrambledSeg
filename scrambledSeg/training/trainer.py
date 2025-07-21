@@ -10,6 +10,8 @@ import pytorch_lightning as pl
 import torchmetrics
 from typing import Dict, Any, Optional, List
 import logging
+import time
+import psutil
 from pathlib import Path
 from ..visualization.callbacks import VisualizationCallback
 from ..visualization.core import SegmentationVisualizer
@@ -38,7 +40,8 @@ class SegformerTrainer(pl.LightningModule):
         gradient_clip_val: float = 1.0,
         visualization: Optional[Dict[str, Any]] = None,
         log_dir: str = 'logs',
-        test_mode: bool = False
+        test_mode: bool = False,
+        num_classes: int = 2
     ):
         """Initialize trainer."""
         super().__init__()
@@ -90,6 +93,7 @@ class SegformerTrainer(pl.LightningModule):
             min_coverage=vis_config.get('min_coverage', 0.05),
             dpi=vis_config.get('dpi', 300),
             enable_memory_tracking=enable_memory_tracking,
+            num_classes=num_classes,
             visualizer=SegmentationVisualizer(
                 metrics_file=str(self.metrics_dir / 'metrics.csv'),
                 min_coverage=vis_config.get('min_coverage', 0.05),
@@ -97,8 +101,35 @@ class SegformerTrainer(pl.LightningModule):
             )
         )
         
-        # Set up metrics for multi-class segmentation
-        self.iou_metric = torchmetrics.JaccardIndex(task="multiclass", num_classes=4)
+        # Set up comprehensive metrics for multi-class segmentation
+        # Use num_classes from config instead of hardcoded value
+        
+        # Primary metrics
+        self.iou_metric = torchmetrics.JaccardIndex(task="multiclass", num_classes=num_classes)
+        self.precision_metric = torchmetrics.Precision(task="multiclass", num_classes=num_classes, average='macro')
+        self.recall_metric = torchmetrics.Recall(task="multiclass", num_classes=num_classes, average='macro')
+        self.f1_metric = torchmetrics.F1Score(task="multiclass", num_classes=num_classes, average='macro')
+        # Use segmentation DiceScore for proper multi-class dice calculation
+        from torchmetrics.segmentation import DiceScore
+        self.dice_metric = DiceScore(num_classes=num_classes, average='macro', input_format='index')
+        self.specificity_metric = torchmetrics.Specificity(task="multiclass", num_classes=num_classes, average='macro')
+        
+        # Per-class metrics for detailed analysis
+        self.iou_per_class = torchmetrics.JaccardIndex(task="multiclass", num_classes=num_classes, average=None)
+        self.precision_per_class = torchmetrics.Precision(task="multiclass", num_classes=num_classes, average=None)
+        self.recall_per_class = torchmetrics.Recall(task="multiclass", num_classes=num_classes, average=None)
+        self.f1_per_class = torchmetrics.F1Score(task="multiclass", num_classes=num_classes, average=None)
+        
+        # Confusion matrix for detailed analysis
+        self.confusion_matrix = torchmetrics.ConfusionMatrix(task="multiclass", num_classes=num_classes)
+        
+        # Store generic class names for better reporting
+        self.class_names = [f'Class_{i}' for i in range(num_classes)]  # Generate class names dynamically
+        
+        # Training monitoring variables
+        self.batch_start_time = None
+        self.epoch_start_time = None
+        self.total_training_samples = 0
         
         # Save hyperparameters only if not in test mode
         if not test_mode:
@@ -208,8 +239,13 @@ class SegformerTrainer(pl.LightningModule):
 
     def training_step(self, batch: Dict[str, torch.Tensor], batch_idx: int) -> Dict[str, torch.Tensor]:
         """Training step with enhanced monitoring."""
+        # Start timing for this batch
+        batch_start_time = time.time()
+        
         images = batch['image']
         masks = batch['mask']
+        batch_size = images.size(0)
+        self.total_training_samples += batch_size
         
         # Input statistics
         # Convert masks to float for statistics calculation
@@ -297,27 +333,87 @@ class SegformerTrainer(pl.LightningModule):
             self.trainer.should_stop = True
             return None
         
-        # Get predicted class labels and calculate IoU
+        # Get predicted class labels and calculate comprehensive metrics
         pred_labels = self.get_predicted_labels(outputs, masks)
         
-        # For multi-class IoU, we need to ensure targets are in the expected format
-        # IoU metric expects class indices of type long, not one-hot or float
-        masks_for_iou = masks.clone()  # Make a copy to avoid modifying original
+        # For multi-class metrics, we need to ensure targets are in the expected format
+        # All metrics expect class indices of type long, not one-hot or float
+        masks_for_metrics = masks.clone()  # Make a copy to avoid modifying original
         
-        # The JaccardIndex expects class indices as long type
-        if masks_for_iou.dim() == 4 and masks_for_iou.size(1) == 1:
-            masks_for_iou = masks_for_iou.squeeze(1)  # B, H, W
+        # The metrics expect class indices as long type
+        if masks_for_metrics.dim() == 4 and masks_for_metrics.size(1) == 1:
+            masks_for_metrics = masks_for_metrics.squeeze(1)  # B, H, W
         
-        # Convert to long type for IoU calculation
-        if masks_for_iou.dtype != torch.long:
-            if masks_for_iou.dtype == torch.bool:
+        # Convert to long type for metric calculations
+        if masks_for_metrics.dtype != torch.long:
+            if masks_for_metrics.dtype == torch.bool:
                 # Boolean tensors need to be converted to long carefully
-                masks_for_iou = masks_for_iou.long()
+                masks_for_metrics = masks_for_metrics.long()
             else:
                 # Float tensors should be rounded to nearest integer
-                masks_for_iou = torch.round(masks_for_iou).long()
-            
-        iou = self.iou_metric(pred_labels, masks_for_iou)
+                masks_for_metrics = torch.round(masks_for_metrics).long()
+        
+        # Calculate all metrics
+        iou = self.iou_metric(pred_labels, masks_for_metrics)
+        precision = self.precision_metric(pred_labels, masks_for_metrics)
+        recall = self.recall_metric(pred_labels, masks_for_metrics)
+        f1 = self.f1_metric(pred_labels, masks_for_metrics)
+        dice = self.dice_metric(pred_labels, masks_for_metrics)
+        specificity = self.specificity_metric(pred_labels, masks_for_metrics)
+        
+        # Calculate per-class metrics (for detailed analysis)
+        iou_per_class = self.iou_per_class(pred_labels, masks_for_metrics)
+        precision_per_class = self.precision_per_class(pred_labels, masks_for_metrics)
+        recall_per_class = self.recall_per_class(pred_labels, masks_for_metrics)
+        f1_per_class = self.f1_per_class(pred_labels, masks_for_metrics)
+        
+        # Update confusion matrix
+        self.confusion_matrix.update(pred_labels, masks_for_metrics)
+        
+        # Calculate training efficiency metrics
+        batch_time = time.time() - batch_start_time
+        samples_per_second = batch_size / batch_time if batch_time > 0 else 0
+        
+        # Get current learning rate
+        current_lr = self._optimizer.param_groups[0]['lr'] if self._optimizer else 0.0
+        
+        # Calculate gradient statistics
+        total_grad_norm = 0.0
+        param_count = 0
+        for param in self.model.parameters():
+            if param.grad is not None:
+                grad_norm = param.grad.data.norm(2)
+                total_grad_norm += grad_norm.item() ** 2
+                param_count += param.numel()
+        
+        total_grad_norm = (total_grad_norm ** 0.5) if total_grad_norm > 0 else 0.0
+        avg_grad_norm = total_grad_norm / max(param_count, 1)
+        
+        # Get GPU memory usage if available
+        gpu_memory_used = 0.0
+        gpu_memory_total = 0.0
+        if torch.cuda.is_available():
+            gpu_memory_used = torch.cuda.memory_allocated() / 1024**3  # GB
+            gpu_memory_total = torch.cuda.memory_reserved() / 1024**3  # GB
+        
+        # Get CPU usage
+        cpu_percent = psutil.cpu_percent()
+        
+        # Training progress metrics
+        training_metrics = {
+            'batch_time': batch_time,
+            'samples_per_second': samples_per_second,
+            'learning_rate': current_lr,
+            'gradient_norm': total_grad_norm,
+            'avg_gradient_norm': avg_grad_norm,
+            'gpu_memory_used_gb': gpu_memory_used,
+            'gpu_memory_total_gb': gpu_memory_total,
+            'cpu_percent': cpu_percent,
+            'total_samples_seen': self.total_training_samples
+        }
+        
+        # Log training progress metrics
+        self.log_dict({f'progress/{k}': v for k, v in training_metrics.items()}, on_step=True)
         
         # Class prediction statistics (for multiple classes)
         num_classes = outputs.size(1)
@@ -339,11 +435,38 @@ class SegformerTrainer(pl.LightningModule):
         self.log('train_loss', loss, on_step=True, on_epoch=True, prog_bar=True)
         self.log('train_iou', iou, on_step=True, on_epoch=True, prog_bar=True)
         
+        # Log comprehensive performance metrics
+        self.log('train_precision', precision, on_step=True, on_epoch=True)
+        self.log('train_recall', recall, on_step=True, on_epoch=True)
+        self.log('train_f1', f1, on_step=True, on_epoch=True)
+        self.log('train_dice', dice, on_step=True, on_epoch=True)
+        self.log('train_specificity', specificity, on_step=True, on_epoch=True)
+        
+        # Log per-class metrics for detailed analysis
+        for i, class_name in enumerate(self.class_names):
+            if i < len(iou_per_class):
+                self.log(f'train_iou_{class_name.lower()}', iou_per_class[i], on_step=False, on_epoch=True)
+                self.log(f'train_precision_{class_name.lower()}', precision_per_class[i], on_step=False, on_epoch=True)
+                self.log(f'train_recall_{class_name.lower()}', recall_per_class[i], on_step=False, on_epoch=True)
+                self.log(f'train_f1_{class_name.lower()}', f1_per_class[i], on_step=False, on_epoch=True)
+        
         return {
             'loss': loss,
             'train_iou': iou,
+            'train_precision': precision,
+            'train_recall': recall,
+            'train_f1': f1,
+            'train_dice': dice,
+            'train_specificity': specificity,
             'output_stats': output_stats,
-            'pred_stats': pred_stats
+            'pred_stats': pred_stats,
+            'training_metrics': training_metrics,
+            'per_class_metrics': {
+                'iou': iou_per_class,
+                'precision': precision_per_class,
+                'recall': recall_per_class,
+                'f1': f1_per_class
+            }
         }
 
     def validation_step(self, batch: Dict[str, torch.Tensor], batch_idx: int) -> Dict[str, torch.Tensor]:
@@ -386,40 +509,83 @@ class SegformerTrainer(pl.LightningModule):
             # Re-raise to stop training
             raise
         
-        # Calculate IoU for multi-class
+        # Calculate comprehensive metrics for validation
         pred_labels = self.get_predicted_labels(outputs, masks)
         
-        # Ensure masks are in the expected format for IoU calculation
-        masks_for_iou = masks.clone()  # Make a copy to avoid modifying original
+        # Ensure masks are in the expected format for metric calculations
+        masks_for_metrics = masks.clone()  # Make a copy to avoid modifying original
         
-        # JaccardIndex expects class indices as long type
-        if masks_for_iou.dim() == 4 and masks_for_iou.size(1) == 1:
-            masks_for_iou = masks_for_iou.squeeze(1)  # B, H, W
+        # All metrics expect class indices as long type
+        if masks_for_metrics.dim() == 4 and masks_for_metrics.size(1) == 1:
+            masks_for_metrics = masks_for_metrics.squeeze(1)  # B, H, W
         
-        # Convert to long type for IoU calculation
-        if masks_for_iou.dtype != torch.long:
-            if masks_for_iou.dtype == torch.bool:
+        # Convert to long type for metric calculations
+        if masks_for_metrics.dtype != torch.long:
+            if masks_for_metrics.dtype == torch.bool:
                 # Boolean tensors need to be converted to long carefully
-                masks_for_iou = masks_for_iou.long()
+                masks_for_metrics = masks_for_metrics.long()
             else:
                 # Float tensors should be rounded to nearest integer
-                masks_for_iou = torch.round(masks_for_iou).long()
-            
-        iou = self.iou_metric(pred_labels, masks_for_iou)
+                masks_for_metrics = torch.round(masks_for_metrics).long()
         
-        # Log metrics
+        # Calculate all validation metrics
+        iou = self.iou_metric(pred_labels, masks_for_metrics)
+        precision = self.precision_metric(pred_labels, masks_for_metrics)
+        recall = self.recall_metric(pred_labels, masks_for_metrics)
+        f1 = self.f1_metric(pred_labels, masks_for_metrics)
+        dice = self.dice_metric(pred_labels, masks_for_metrics)
+        specificity = self.specificity_metric(pred_labels, masks_for_metrics)
+        
+        # Calculate per-class metrics for validation
+        iou_per_class = self.iou_per_class(pred_labels, masks_for_metrics)
+        precision_per_class = self.precision_per_class(pred_labels, masks_for_metrics)
+        recall_per_class = self.recall_per_class(pred_labels, masks_for_metrics)
+        f1_per_class = self.f1_per_class(pred_labels, masks_for_metrics)
+        
+        # Log main validation metrics
         self.log('val_loss', loss, on_step=True, on_epoch=True, prog_bar=True, sync_dist=True)
         self.log('val_iou', iou, on_step=True, on_epoch=True, prog_bar=True, sync_dist=True)
+        
+        # Log comprehensive validation metrics
+        self.log('val_precision', precision, on_step=True, on_epoch=True, sync_dist=True)
+        self.log('val_recall', recall, on_step=True, on_epoch=True, sync_dist=True)
+        self.log('val_f1', f1, on_step=True, on_epoch=True, sync_dist=True)
+        self.log('val_dice', dice, on_step=True, on_epoch=True, sync_dist=True)
+        self.log('val_specificity', specificity, on_step=True, on_epoch=True, sync_dist=True)
+        
+        # Log per-class validation metrics
+        for i, class_name in enumerate(self.class_names):
+            if i < len(iou_per_class):
+                self.log(f'val_iou_{class_name.lower()}', iou_per_class[i], on_step=False, on_epoch=True, sync_dist=True)
+                self.log(f'val_precision_{class_name.lower()}', precision_per_class[i], on_step=False, on_epoch=True, sync_dist=True)
+                self.log(f'val_recall_{class_name.lower()}', recall_per_class[i], on_step=False, on_epoch=True, sync_dist=True)
+                self.log(f'val_f1_{class_name.lower()}', f1_per_class[i], on_step=False, on_epoch=True, sync_dist=True)
         
         # Store for epoch end processing
         self.validation_step_outputs.append({
             'val_loss': loss,
-            'val_iou': iou
+            'val_iou': iou,
+            'val_precision': precision,
+            'val_recall': recall,
+            'val_f1': f1,
+            'val_dice': dice,
+            'val_specificity': specificity
         })
         
         return {
             'val_loss': loss,
-            'val_iou': iou
+            'val_iou': iou,
+            'val_precision': precision,
+            'val_recall': recall,
+            'val_f1': f1,
+            'val_dice': dice,
+            'val_specificity': specificity,
+            'per_class_metrics': {
+                'iou': iou_per_class,
+                'precision': precision_per_class,
+                'recall': recall_per_class,
+                'f1': f1_per_class
+            }
         }
 
 
@@ -429,20 +595,156 @@ class SegformerTrainer(pl.LightningModule):
             # Aggregate validation metrics
             val_loss = torch.stack([x['val_loss'] for x in self.validation_step_outputs]).mean()
             val_iou = torch.stack([x['val_iou'] for x in self.validation_step_outputs]).mean()
+            val_precision = torch.stack([x['val_precision'] for x in self.validation_step_outputs]).mean()
+            val_recall = torch.stack([x['val_recall'] for x in self.validation_step_outputs]).mean()
+            val_f1 = torch.stack([x['val_f1'] for x in self.validation_step_outputs]).mean()
+            val_dice = torch.stack([x['val_dice'] for x in self.validation_step_outputs]).mean()
+            val_specificity = torch.stack([x['val_specificity'] for x in self.validation_step_outputs]).mean()
             
             # Log aggregated metrics
             self.log('val_loss_epoch', val_loss, prog_bar=True)
             self.log('val_iou_epoch', val_iou, prog_bar=True)
+            self.log('val_precision_epoch', val_precision, prog_bar=True)
+            self.log('val_recall_epoch', val_recall, prog_bar=True)
+            self.log('val_f1_epoch', val_f1, prog_bar=True)
+            self.log('val_dice_epoch', val_dice, prog_bar=True)
+            self.log('val_specificity_epoch', val_specificity, prog_bar=True)
+            
+            # Get current confusion matrix and log class-wise metrics
+            if hasattr(self, 'confusion_matrix'):
+                cm = self.confusion_matrix.compute()
+                if cm is not None and cm.numel() > 0:
+                    # Log confusion matrix statistics
+                    self.log('confusion_matrix_trace', torch.trace(cm), prog_bar=False)
+                    
+                    # Calculate and log detailed confusion matrix metrics
+                    self._log_confusion_matrix_analysis(cm)
+                    
+                    # Save confusion matrix for analysis
+                    self._save_confusion_matrix(cm, self.current_epoch)
+                    
+                    # Reset confusion matrix for next epoch
+                    self.confusion_matrix.reset()
             
             # Clear the outputs list
             self.validation_step_outputs.clear()
             
         except Exception as e:
             logger.error(f"Error in on_validation_epoch_end: {str(e)}")
+            logger.error(f"Available keys in validation outputs: {list(self.validation_step_outputs[0].keys()) if self.validation_step_outputs else 'None'}")
 
     def on_validation_epoch_start(self) -> None:
         """Clear the validation outputs at the start of each validation epoch."""
         self.validation_step_outputs = []
+    
+    def on_train_epoch_start(self) -> None:
+        """Track epoch start time and reset counters."""
+        self.epoch_start_time = time.time()
+        self.total_training_samples = 0
+        
+    def on_train_epoch_end(self) -> None:
+        """Log epoch-level training metrics."""
+        if self.epoch_start_time is not None:
+            epoch_time = time.time() - self.epoch_start_time
+            
+            # Log epoch-level metrics
+            self.log('epoch_time_minutes', epoch_time / 60.0, on_epoch=True)
+            self.log('samples_per_epoch', self.total_training_samples, on_epoch=True)
+            
+            if epoch_time > 0:
+                self.log('epoch_samples_per_second', self.total_training_samples / epoch_time, on_epoch=True)
+    
+    def _log_confusion_matrix_analysis(self, cm: torch.Tensor):
+        """Log detailed confusion matrix analysis."""
+        try:
+            num_classes = cm.size(0)
+            
+            # Calculate per-class accuracy
+            class_accuracies = torch.diag(cm) / torch.sum(cm, dim=1)
+            
+            # Calculate per-class precision, recall, and F1
+            true_positives = torch.diag(cm)
+            false_positives = torch.sum(cm, dim=0) - true_positives
+            false_negatives = torch.sum(cm, dim=1) - true_positives
+            
+            precision = true_positives / (true_positives + false_positives + 1e-8)
+            recall = true_positives / (true_positives + false_negatives + 1e-8)
+            f1 = 2 * (precision * recall) / (precision + recall + 1e-8)
+            
+            # Log per-class metrics from confusion matrix
+            for i, class_name in enumerate(self.class_names):
+                if i < num_classes:
+                    self.log(f'cm_accuracy_{class_name.lower()}', class_accuracies[i], prog_bar=False)
+                    self.log(f'cm_precision_{class_name.lower()}', precision[i], prog_bar=False)
+                    self.log(f'cm_recall_{class_name.lower()}', recall[i], prog_bar=False)
+                    self.log(f'cm_f1_{class_name.lower()}', f1[i], prog_bar=False)
+            
+            # Calculate overall metrics
+            overall_accuracy = torch.trace(cm) / torch.sum(cm)
+            macro_precision = torch.mean(precision)
+            macro_recall = torch.mean(recall)
+            macro_f1 = torch.mean(f1)
+            
+            # Calculate weighted metrics
+            class_support = torch.sum(cm, dim=1)
+            weighted_precision = torch.sum(precision * class_support) / torch.sum(class_support)
+            weighted_recall = torch.sum(recall * class_support) / torch.sum(class_support)
+            weighted_f1 = torch.sum(f1 * class_support) / torch.sum(class_support)
+            
+            # Log overall metrics
+            self.log('cm_overall_accuracy', overall_accuracy, prog_bar=False)
+            self.log('cm_macro_precision', macro_precision, prog_bar=False)
+            self.log('cm_macro_recall', macro_recall, prog_bar=False)
+            self.log('cm_macro_f1', macro_f1, prog_bar=False)
+            self.log('cm_weighted_precision', weighted_precision, prog_bar=False)
+            self.log('cm_weighted_recall', weighted_recall, prog_bar=False)
+            self.log('cm_weighted_f1', weighted_f1, prog_bar=False)
+            
+            # Calculate and log class imbalance metrics
+            class_distribution = class_support / torch.sum(class_support)
+            entropy = -torch.sum(class_distribution * torch.log(class_distribution + 1e-8))
+            max_entropy = torch.log(torch.tensor(num_classes, dtype=torch.float))
+            normalized_entropy = entropy / max_entropy
+            
+            self.log('cm_class_entropy', entropy, prog_bar=False)
+            self.log('cm_normalized_entropy', normalized_entropy, prog_bar=False)
+            
+        except Exception as e:
+            logger.error(f"Error in confusion matrix analysis: {str(e)}")
+    
+    def _save_confusion_matrix(self, cm: torch.Tensor, epoch: int):
+        """Save confusion matrix to file for later analysis."""
+        try:
+            import json
+            
+            # Create confusion matrix directory
+            cm_dir = self.log_dir / 'confusion_matrices'
+            cm_dir.mkdir(parents=True, exist_ok=True)
+            
+            # Convert to numpy for JSON serialization
+            cm_np = cm.detach().cpu().numpy()
+            
+            # Create confusion matrix data structure
+            cm_data = {
+                'epoch': epoch,
+                'matrix': cm_np.tolist(),
+                'class_names': self.class_names,
+                'total_samples': int(torch.sum(cm).item()),
+                'timestamp': str(torch.datetime.now() if hasattr(torch, 'datetime') else 'unknown')
+            }
+            
+            # Save to JSON file
+            cm_file = cm_dir / f'confusion_matrix_epoch_{epoch:03d}.json'
+            with open(cm_file, 'w') as f:
+                json.dump(cm_data, f, indent=2)
+            
+            # Also save latest confusion matrix
+            latest_file = cm_dir / 'confusion_matrix_latest.json'
+            with open(latest_file, 'w') as f:
+                json.dump(cm_data, f, indent=2)
+                
+        except Exception as e:
+            logger.error(f"Error saving confusion matrix: {str(e)}")
 
     def configure_optimizers(self):
         """Configure optimizers and learning rate schedulers."""
