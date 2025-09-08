@@ -24,7 +24,7 @@ This project implements a modified SegFormer architecture to automatically segme
 
 | Epoch 0 Sample | Epoch 13 Sample |
 |:-------------:|:-------------:|
-| <img src="https://github.com/tristanmanchester/ScrambledSeg/blob/main/epoch_0_sample_1.png" width="500"> | <img src="https://github.com/tristanmanchester/ScrambledSeg/blob/main/epoch_13_sample_0.png" width="500"> |
+| <img src="https://github.com/tristanmanchester/ScrambledSeg/blob/main/epoch_0_sample_1.jpg" width="500"> | <img src="https://github.com/tristanmanchester/ScrambledSeg/blob/main/epoch_13_sample_0.jpg" width="500"> |
 
 ## Technical Details
 
