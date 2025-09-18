@@ -182,6 +182,7 @@ Available prediction modes:
 - `SINGLE_AXIS`: Standard single-direction prediction
 - `THREE_AXIS`: Predictions from X, Y, and Z directions
 - `TWELVE_AXIS`: Enhanced multi-angle predictions for maximum accuracy
+- Adjust verbosity with `--log-level` (e.g. `--log-level DEBUG` to inspect ensemble details)
 
 #### Multi-Phase Prediction
 
@@ -237,6 +238,10 @@ Unit tests cover critical numerical components such as loss functions and traini
 pixi run pytest
 ```
 
+## Contributing
+
+Contributions are welcome. Please open an issue to discuss significant changes and run `pixi run pytest` to verify updates before opening a pull request.
+
 ## Citation
 
 If you use this code in your research, please cite our paper:
@@ -245,11 +250,11 @@ If you use this code in your research, please cite our paper:
 @article{manchester2025leveraging,
   title={Leveraging Modified Ex Situ Tomography Data for Segmentation of In Situ Synchrotron X-Ray Computed Tomography},
   author={Manchester, Tristan and Anders, Adam and Spadotto, Julio and Eccleston, Hannah and Beavan, William and Arcis, Hugues and Connolly, Brian J.},
-  journal={arXiv preprint arXiv:2504.19200},
+  journal={Journal of Microscopy},
   year={2025},
-  doi={10.48550/arXiv.2504.19200}
+  doi={10.1111/jmi.70032}
 }
 ```
 You can also cite it as:
 
-Manchester, T., Anders, A., Spadotto, J., Eccleston, H., Beavan, W., Arcis, H., & Connolly, B. J. (2025). Leveraging Modified Ex Situ Tomography Data for Segmentation of In Situ Synchrotron X-Ray Computed Tomography. arXiv:2504.19200. https://doi.org/10.48550/arXiv.2504.19200
+Manchester, T., Anders, A., Spadotto, J., Eccleston, H., Beavan, W., Arcis, H., & Connolly, B. J. (2025). Leveraging Modified Ex Situ Tomography Data for Segmentation of In Situ Synchrotron X-Ray Computed Tomography. Journal of Microscopy. https://doi.org/10.1111/jmi.70032

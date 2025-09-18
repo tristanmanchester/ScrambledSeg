@@ -68,3 +68,15 @@ def test_metrics_analyzer_generates_outputs(tmp_path) -> None:
 
     assert export_paths["key_statistics"].exists()
 
+
+def test_metrics_analyzer_class_name_override(tmp_path) -> None:
+    """Custom class name sets should update analyzer configuration."""
+
+    csv_path = _create_metrics_csv(tmp_path)
+    analyzer = MetricsAnalyzer(str(csv_path), class_names=["Phase A", "Phase B"])
+
+    assert analyzer.class_names == ["Phase A", "Phase B"]
+
+    analyzer.set_class_names(["Layer 0"])
+    per_class = analyzer.analyze_per_class_performance()
+    assert "Layer 0" in per_class

@@ -18,6 +18,19 @@ logging.basicConfig(level=logging.INFO, format="%(levelname)s:%(name)s:%(message
 logger = logging.getLogger(__name__)
 
 
+def configure_logging(level: str) -> None:
+    """Update the global logging level from CLI input."""
+
+    try:
+        numeric_level = getattr(logging, level.upper())
+    except AttributeError as exc:  # pragma: no cover - guarding against invalid input
+        raise ValueError(f"Unsupported log level '{level}'.") from exc
+
+    logging.getLogger().setLevel(numeric_level)
+    for handler in logging.getLogger().handlers:
+        handler.setLevel(numeric_level)
+
+
 def get_prediction_mode(mode_str: str) -> PredictionMode:
     """Convert a string value to the corresponding :class:`PredictionMode`."""
 
@@ -129,6 +142,12 @@ def build_argument_parser() -> argparse.ArgumentParser:
         default="bf16",
         help="Precision to use for inference (default: bf16)",
     )
+    parser.add_argument(
+        "--log-level",
+        type=str,
+        default="INFO",
+        help="Logging level to use (e.g. INFO, DEBUG)",
+    )
 
     return parser
 
@@ -170,6 +189,8 @@ def main() -> None:
 
     parser = build_argument_parser()
     args = parser.parse_args()
+
+    configure_logging(args.log_level)
 
     device = args.device or ("cuda" if torch.cuda.is_available() else "cpu")
 

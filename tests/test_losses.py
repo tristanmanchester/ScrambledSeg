@@ -17,6 +17,7 @@ from scrambledSeg.losses import (
     CompoundLoss,
     CrossEntropyDiceLoss,
     create_loss,
+    list_available_losses,
 )
 
 torch = pytest.importorskip("torch")
@@ -68,3 +69,17 @@ def test_create_loss_factory_dispatch() -> None:
     assert isinstance(create_loss("crossentropy_dice"), CrossEntropyDiceLoss)
     assert isinstance(create_loss("compound"), CompoundLoss)
 
+
+def test_create_loss_accepts_aliases() -> None:
+    """Hyphenated aliases should resolve via the loss factory."""
+
+    loss = create_loss("crossentropy-dice")
+    assert isinstance(loss, CrossEntropyDiceLoss)
+
+
+def test_list_available_losses_includes_registered_entries() -> None:
+    """The registry helper should expose normalized loss names."""
+
+    registry = list_available_losses()
+    assert "crossentropy_dice" in registry
+    assert "compound" in registry
