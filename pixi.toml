@@ -2,7 +2,7 @@
 name = "scrambledseg"
 version = "0.1.0"
 channels = ["conda-forge"]
-platforms = ["win-64"]
+platforms = ["linux-64", "osx-64", "win-64"]
 
 [tasks]
 lint = "black ."
@@ -19,8 +19,8 @@ scikit-image = ">=0.25.2,<0.26"
 psutil = ">=7.0.0,<8"
 
 [pypi-dependencies]
-torch = {version = ">=2.0.0", index = "https://download.pytorch.org/whl/cu118"}  # Changed to cu118
-torchvision = {version = ">=0.15.0", index = "https://download.pytorch.org/whl/cu118"}  # Changed to cu118
+torch = ">=2.0.0"
+torchvision = ">=0.15.0"
 pytorch-lightning = ">=2.0.0"
 albumentations = "==2.0.5"
 transformers = ">=4.30.0"
@@ -35,6 +35,5 @@ tqdm = "*"
 rich = ">=13.0.0"
 pandas = "*"
 matplotlib = "*"
-seaborn = "*"
 scipy = "*"
 torchmetrics = "*"

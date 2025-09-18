@@ -1,13 +1,13 @@
-"""Loss functions for segmentation tasks."""
+"""Loss function implementations for ScrambledSeg."""
 
 import logging
-from typing import Dict, List, Optional, Union, Tuple, Callable
+from typing import Callable, Dict, List, Optional, Tuple, Union
+
 import numpy as np
 
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from torch.autograd import Variable
 
 logger = logging.getLogger(__name__)
 
@@ -35,7 +35,7 @@ def lovasz_softmax_flat(
 ) -> torch.Tensor:
     """
     Multi-class Lovasz-Softmax loss
-    probas: [P, C] Variable, class probabilities at each prediction (between 0 and 1)
+    probas: [P, C] Tensor, class probabilities at each prediction (between 0 and 1)
     labels: [P] Tensor, ground truth labels (between 0 and C - 1)
     classes: 'all' for all, 'present' for classes present in labels, or a list of classes to average.
     ignore: void class labels

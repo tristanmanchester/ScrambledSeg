@@ -10,6 +10,21 @@ A deep learning-based segmentation pipeline for in situ synchrotron X-ray comput
 
 This project implements a modified SegFormer architecture to automatically segment synchrotron tomography data. The key innovation is training on transformed high-quality laboratory XCT data to handle artefact-rich synchrotron data, achieving over 80% IoU while reducing processing time from hours to seconds per volume.
 
+## Table of Contents
+
+- [Key Features](#key-features)
+- [Example Training Visualisations](#example-training-visualisations)
+- [Requirements](#requirements)
+- [Quick Start](#quick-start)
+  - [Environment Setup](#environment-setup)
+  - [Data Preprocessing](#data-preprocessing)
+  - [Training](#training)
+  - [Inference](#inference)
+- [Project Structure](#project-structure)
+- [Testing](#testing)
+- [Multi-Phase Segmentation](#multi-phase-segmentation)
+- [Citation](#citation)
+
 ## Key Features
 
 - Custom SegFormer implementation optimized for single-channel tomographic data
@@ -54,11 +69,11 @@ This extension makes ScrambledSeg suitable for complex material science applicat
 - PyTorch Lightning >= 2.0.0
 - Albumentations >= 2.0.0
 - transformers >= 4.30.0
-- CUDA-capable GPU with 8+ GB memory recommended
+- CUDA-capable GPU with 8+ GB memory recommended (CPU execution is also supported for experimentation)
 
-See `pixi.toml` for complete dependency list.
+See [`pixi.toml`](pixi.toml) for the complete dependency list and reproducible environment specification.
 
-## Usage
+## Quick Start
 
 ### Environment Setup
 
@@ -82,11 +97,17 @@ The preprocessing script prepares 3D volumes for training by:
 2. Organizing slices into train (80%), validation (10%), and test (10%) sets
 
 ```bash
-# If in pixi shell:
-python data/preprocess_volumes.py --data-dir /path/to/raw/data --label-dir /path/to/raw/labels --output-dir /path/to/processed/data
+# If in a pixi shell
+python data/preprocess_volumes.py \
+  --data-dir /path/to/raw/data \
+  --label-dir /path/to/raw/labels \
+  --output-dir /path/to/processed/data
 
-# Or using pixi run:
-pixi run -- python data/preprocess_volumes.py --data-dir /path/to/raw/data --label-dir /path/to/raw/labels --output-dir /path/to/processed/data
+# Or using pixi from the system shell
+pixi run python data/preprocess_volumes.py \
+  --data-dir /path/to/raw/data \
+  --label-dir /path/to/raw/labels \
+  --output-dir /path/to/processed/data
 ```
 
 The script expects:
@@ -96,13 +117,13 @@ The script expects:
 
 ### Training
 
-Training is configured via YAML files in the `configs/` directory:
+Training is configured via YAML files in the [`configs/`](configs) directory. The default configuration is [`training_config.yaml`](configs/training_config.yaml).
 
 ```bash
-pixi run python -m scrambledSeg.training.train .\configs\training_config.yaml
+pixi run python -m scrambledSeg.training.train configs/training_config.yaml
 ```
 
-The configuration file specifies training parameters, data paths, and model architecture settings.
+Key options are documented inline in the configuration file. Update the dataset locations, number of classes, and optimisation settings to match your experiment.
 
 #### Multi-Phase Segmentation Configuration
 
@@ -145,10 +166,10 @@ The CLI supports single-axis, three-axis, and twelve-axis prediction modes:
 
 ```bash
 # Basic usage
-pixi run -- python predict_cli.py /path/to/input.h5 /path/to/checkpoint.ckpt
+pixi run python predict_cli.py /path/to/input.h5 /path/to/checkpoint.ckpt
 
 # Advanced options
-pixi run -- python predict_cli.py \
+pixi run python predict_cli.py \
     /path/to/input.h5 \
     /path/to/checkpoint.ckpt \
     --mode THREE_AXIS \
@@ -188,6 +209,32 @@ plt.imshow(pred[50], cmap='tab10')  # View slice 50
 plt.colorbar(label='Phase')
 plt.title('Multi-Phase Segmentation')
 plt.savefig('multi_phase_result.png')
+```
+
+## Project Structure
+
+```
+ScrambledSeg/
+├── configs/                 # Experiment configuration files
+├── scrambledSeg/
+│   ├── analysis/            # Training analysis utilities
+│   ├── data/                # Dataset definitions and preprocessing helpers
+│   ├── losses/              # Loss functions and factory utilities
+│   ├── models/              # SegFormer customisations
+│   ├── prediction/          # Inference utilities and ensembles
+│   ├── training/            # Training loop, callbacks, and progress reporting
+│   └── visualization/       # Callbacks and helpers for qualitative outputs
+├── predict_cli.py           # Command-line prediction entry point
+├── slice_generator_projection.py
+└── potential_improvements.md
+```
+
+## Testing
+
+Unit tests cover critical numerical components such as loss functions and training analytics. Run the full suite with:
+
+```bash
+pixi run pytest
 ```
 
 ## Citation
