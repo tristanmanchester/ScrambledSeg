@@ -8,6 +8,7 @@ platforms = ["linux-64", "osx-64", "win-64"]
 lint = "black ."
 format = "isort ."
 run = { cmd = ["python", "scrambledSeg/training/train.py", "configs/training_config.yaml"], env = { PYTHONPATH = "." } }
+coverage = { cmd = ["pytest", "--cov=scrambledSeg"], env = { PYTHONPATH = "." } }
 
 [dependencies]
 python = "3.10.*"  # Being explicit about Python version
@@ -37,3 +38,4 @@ pandas = "*"
 matplotlib = "*"
 scipy = "*"
 torchmetrics = "*"
+pytest-cov = ">=4.1.0,<5"

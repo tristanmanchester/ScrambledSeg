@@ -182,6 +182,7 @@ Available prediction modes:
 - `SINGLE_AXIS`: Standard single-direction prediction
 - `THREE_AXIS`: Predictions from X, Y, and Z directions
 - `TWELVE_AXIS`: Enhanced multi-angle predictions for maximum accuracy
+- Adjust verbosity with `--log-level` (e.g. `--log-level DEBUG` to inspect ensemble details)
 
 #### Multi-Phase Prediction
 

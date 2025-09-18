@@ -13,6 +13,8 @@ import seaborn as sns
 
 logger = logging.getLogger(__name__)
 
+DEFAULT_CLASS_NAMES = ["Class_0", "Class_1", "Class_2", "Class_3"]
+
 @dataclass
 class MetricSummary:
     """Summary statistics for a single metric."""
@@ -46,15 +48,38 @@ class TrainingAnalysis:
 
 class MetricsAnalyzer:
     """Comprehensive metrics analysis and reporting."""
-    
-    def __init__(self, metrics_file: str, experiment_name: str = "experiment"):
+
+    def __init__(
+        self,
+        metrics_file: str,
+        experiment_name: str = "experiment",
+        class_names: Optional[List[str]] = None,
+    ):
         """Initialize analyzer with metrics CSV file."""
+
         self.metrics_file = Path(metrics_file)
         self.experiment_name = experiment_name
         self.df = None
-        self.class_names = ['Class_0', 'Class_1', 'Class_2', 'Class_3']
-        
+        self.set_class_names(class_names or DEFAULT_CLASS_NAMES)
+
         self._load_data()
+
+    @staticmethod
+    def _to_column_suffix(name: str) -> str:
+        """Normalize class names for column lookup."""
+
+        return name.strip().lower().replace(" ", "_")
+
+    def set_class_names(self, class_names: List[str]) -> None:
+        """Update tracked class names for per-class summaries."""
+
+        if not class_names:
+            raise ValueError("class_names must contain at least one entry")
+
+        self.class_names = list(class_names)
+        self._class_column_suffix = {
+            name: self._to_column_suffix(name) for name in class_names
+        }
     
     def _load_data(self):
         """Load and preprocess metrics data."""
@@ -223,12 +248,13 @@ class MetricsAnalyzer:
         
         for class_name in self.class_names:
             class_analysis = {}
-            
+            class_suffix = self._class_column_suffix[class_name]
+
             for metric_type in metric_types:
                 # Analyze both training and validation
                 for split in ['train', 'val']:
-                    col_name = f'{split}_{metric_type}_{class_name.lower()}'
-                    
+                    col_name = f'{split}_{metric_type}_{class_suffix}'
+
                     if col_name in self.df.columns:
                         summary = self._calculate_metric_summary(
                             self.df[col_name], 

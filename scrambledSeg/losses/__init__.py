@@ -11,6 +11,15 @@ import torch.nn.functional as F
 
 logger = logging.getLogger(__name__)
 
+_LOSS_BUILDERS: Dict[str, Callable[..., nn.Module]] = {}
+
+
+def _register_loss(name: str, factory: Callable[..., nn.Module]) -> None:
+    """Register a loss factory for the :func:`create_loss` helper."""
+
+    normalized = name.lower()
+    _LOSS_BUILDERS[normalized] = factory
+
 # Lovász loss implementation based on PyTorch version
 def lovasz_grad(gt_sorted: torch.Tensor) -> torch.Tensor:
     """
@@ -121,6 +130,9 @@ class LovaszSoftmaxLoss(nn.Module):
             return lovasz_softmax_flat(pred, target, self.classes, self.ignore)
 
 
+_register_loss("lovasz", LovaszSoftmaxLoss)
+
+
 class BCEDiceLoss(nn.Module):
     def __init__(
         self,
@@ -169,6 +181,9 @@ class BCEDiceLoss(nn.Module):
         dice = self.dice_loss(pred, target)
         
         return self.bce_weight * bce + self.dice_weight * dice
+
+
+_register_loss("bcedice", BCEDiceLoss)
 
 
 class FocalLoss(nn.Module):
@@ -260,6 +275,9 @@ class FocalLoss(nn.Module):
             return loss.sum() / (mask.sum() + 1e-8)
 
 
+_register_loss("focal", FocalLoss)
+
+
 class TverskyLoss(nn.Module):
     """
     Tversky loss for handling imbalanced data by giving different weights 
@@ -337,6 +355,9 @@ class TverskyLoss(nn.Module):
             
         # Average loss across all classes
         return torch.stack(losses).mean()
+
+
+_register_loss("tversky", TverskyLoss)
 
 
 class CompoundLoss(nn.Module):
@@ -418,6 +439,9 @@ class CompoundLoss(nn.Module):
                 self.tversky_weight * tversky)
 
 
+_register_loss("compound", CompoundLoss)
+
+
 class CrossEntropyDiceLoss(nn.Module):
     def __init__(
         self,
@@ -494,55 +518,51 @@ class CrossEntropyDiceLoss(nn.Module):
         # Convert target to one-hot encoded format
         num_classes = pred.size(1)
         target_one_hot = F.one_hot(target, num_classes).permute(0, 3, 1, 2).float()
-        
+
         # Calculate Dice loss
         dice_loss = self.multi_class_dice_loss(pred_softmax, target_one_hot)
-        
+
         # Combine losses
         return self.ce_weight * ce_loss + self.dice_weight * dice_loss
 
 
+# Register loss builders for the factory helper
+_register_loss("crossentropy_dice", CrossEntropyDiceLoss)
+_register_loss("crossentropy", lambda **kwargs: nn.CrossEntropyLoss(**kwargs))
+
+
 def create_loss(loss_type: str = "crossentropy_dice", **kwargs) -> nn.Module:
     """Create a loss function based on type.
-    
+
     Args:
-        loss_type: Type of loss function to create:
-            - "bcedice": Binary Cross Entropy + Dice Loss
-            - "crossentropy_dice": Cross Entropy + Dice Loss for multi-class
-            - "crossentropy": Pure Cross Entropy Loss
-            - "lovasz": Lovász Softmax Loss for multi-class
-            - "focal": Focal Loss for handling class imbalance
-            - "tversky": Tversky Loss for balancing precision and recall
-            - "compound": Combined Lovász + Focal + Tversky for battery segmentation
-        **kwargs: Additional arguments to pass to the loss function
-        
+        loss_type: Type of loss function to create. Hyphen and underscore variants
+            are treated interchangeably.
+        **kwargs: Additional keyword arguments forwarded to the loss constructor.
+
     Returns:
-        The instantiated loss function
+        The instantiated loss function.
     """
-    if loss_type.lower() == "bcedice":
-        return BCEDiceLoss(**kwargs)
-    elif loss_type.lower() == "crossentropy_dice":
-        return CrossEntropyDiceLoss(**kwargs)
-    elif loss_type.lower() == "crossentropy":
-        return nn.CrossEntropyLoss(**kwargs)
-    elif loss_type.lower() == "lovasz":
-        return LovaszSoftmaxLoss(**kwargs)
-    elif loss_type.lower() == "focal":
-        return FocalLoss(**kwargs)
-    elif loss_type.lower() == "tversky":
-        return TverskyLoss(**kwargs)
-    elif loss_type.lower() == "compound":
-        return CompoundLoss(**kwargs)
-    else:
+
+    normalized = loss_type.lower().replace("-", "_")
+    if normalized not in _LOSS_BUILDERS:
         raise ValueError(f"Unknown loss type: {loss_type}")
-        
-    # Usage example in config:
-    # loss:
-    #   type: "compound"  # Use compound loss for battery segmentation
-    #   params:
-    #     lovasz_weight: 0.4
-    #     focal_weight: 0.3
-    #     tversky_weight: 0.3
-    #     focal_gamma: 2.0
-    #     tversky_alpha: 0.3
-    #     tversky_beta: 0.7
+
+    return _LOSS_BUILDERS[normalized](**kwargs)
+
+
+def list_available_losses() -> List[str]:
+    """Return the normalized names understood by :func:`create_loss`."""
+
+    return sorted(_LOSS_BUILDERS.keys())
+
+
+# Usage example in config:
+# loss:
+#   type: "compound"  # Use compound loss for battery segmentation
+#   params:
+#     lovasz_weight: 0.4
+#     focal_weight: 0.3
+#     tversky_weight: 0.3
+#     focal_gamma: 2.0
+#     tversky_alpha: 0.3
+#     tversky_beta: 0.7
