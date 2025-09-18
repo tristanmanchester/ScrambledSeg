@@ -56,7 +56,7 @@ def main():
     # TIFF-specific arguments
     parser.add_argument("--tile_size", type=int, default=512,
                        help="Size of tiles for processing large images (default: 512)")
-    parser.add_argument("--tile_overlap", type=int, default=32,
+    parser.add_argument("--tile_overlap", type=int, default=64,
                        help="Overlap between tiles (default: 64)")
     
     # General arguments
@@ -68,6 +68,18 @@ def main():
                        help="Device to use (default: cuda if available, else cpu)")
     parser.add_argument("--precision", type=str, choices=['32', '16', 'bf16'], default='bf16',
                        help="Precision to use for inference (default: bf16)")
+    parser.add_argument("--encoder_name", type=str,
+                       default="nvidia/segformer-b4-finetuned-ade-512-512",
+                       help="Hugging Face model identifier for the SegFormer backbone")
+    parser.add_argument("--num_classes", type=int, default=4,
+                       help="Number of segmentation classes, including background")
+    parser.add_argument("--in_channels", type=int, default=1,
+                       help="Number of input channels expected by the model")
+    parser.add_argument("--cache_dir", type=str, default=".model_cache",
+                       help="Directory for caching downloaded model weights")
+    parser.add_argument("--no_pretrained", dest="pretrained", action="store_false",
+                       help="Initialize the model from config without downloading pretrained weights")
+    parser.set_defaults(pretrained=True)
     
     args = parser.parse_args()
     
@@ -77,8 +89,11 @@ def main():
     
     # Model configuration
     model_config = {
-        "encoder_name": "nvidia/segformer-b4-finetuned-ade-512-512",
-        "num_classes": 4  # Multi-phase segmentation with 4 classes (0, 1, 2, 3)
+        "encoder_name": args.encoder_name,
+        "num_classes": args.num_classes,
+        "pretrained": args.pretrained,
+        "in_channels": args.in_channels,
+        "cache_dir": args.cache_dir,
     }
     
     # Create output directory
@@ -86,25 +101,31 @@ def main():
     output_dir.mkdir(exist_ok=True, parents=True)
     
     # Load model
-    logger.info("Loading model...")
+    logger.info(
+        "Loading model '%s' with %d class(es) and %d input channel(s)",
+        args.encoder_name,
+        args.num_classes,
+        args.in_channels,
+    )
     model = CustomSegformer(**model_config)
     
     # Load checkpoint
     logger.info(f"Loading checkpoint from {args.checkpoint}")
     checkpoint = torch.load(args.checkpoint, map_location=args.device)
-    
+    state_dict = checkpoint["state_dict"] if "state_dict" in checkpoint else checkpoint
+
     # Try different ways to load state dict
     try:
-        model.load_state_dict(checkpoint["state_dict"])
-    except:
+        model.load_state_dict(state_dict)
+    except Exception:
         logger.info("Failed to load state dict directly, trying without 'model.' prefix")
-        new_state_dict = {k.replace("model.", ""): v for k, v in checkpoint["state_dict"].items()}
+        new_state_dict = {k.replace("model.", ""): v for k, v in state_dict.items()}
         try:
             model.load_state_dict(new_state_dict)
             logger.info("Successfully loaded state dict after removing prefix")
-        except Exception as e:
+        except Exception as error:
             model.load_state_dict(new_state_dict, strict=False)
-            logger.info("Successfully loaded state dict with strict=False")
+            logger.info("Loaded state dict with strict=False due to: %s", error)
     
     # Create predictor
     predictor = Predictor(

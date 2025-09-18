@@ -130,7 +130,8 @@ def create_trainer_module(config: dict, train_dataloader, val_dataloader):
             encoder_name=config.get('encoder_name', 'nvidia/mit-b0'),
             num_classes=config.get('num_classes', 1),
             pretrained=config.get('pretrained', True),
-            ignore_mismatched_sizes=True
+            ignore_mismatched_sizes=True,
+            in_channels=config.get('in_channels', 1)
         )
     
     # Create loss function using factory

@@ -184,11 +184,13 @@ class TiffHandler:
             
             # Apply stronger weight falloff at edges to reduce border artifacts
             border_ratio = 0.7  # How much of the overlap to consider as border
-            border_size = int(self.trim_size * border_ratio)
+            border_size = int(self.trim_size * border_ratio) if self.trim_size > 0 else 0
+            if border_size == 0 and self.trim_size > 0:
+                border_size = 1
             center_weight = 3.0  # Center regions have higher confidence
-            
+
             # Apply weight profile
-            if not is_edge_row:
+            if not is_edge_row and border_size > 0:
                 # Top edge falloff
                 weight_mask[:border_size, :] = np.linspace(0.1, 1, border_size)[:, np.newaxis]
                 # Bottom edge falloff
@@ -198,8 +200,8 @@ class TiffHandler:
                 center_end = weight_mask.shape[0] - border_size
                 if center_end > center_start:
                     weight_mask[center_start:center_end, :] *= center_weight
-            
-            if not is_edge_col:
+
+            if not is_edge_col and border_size > 0:
                 # Left edge falloff
                 weight_mask[:, :border_size] *= np.linspace(0.1, 1, border_size)[np.newaxis, :]
                 # Right edge falloff
@@ -210,9 +212,12 @@ class TiffHandler:
                 if center_end > center_start:
                     weight_mask[:, center_start:center_end] *= center_weight
             
+            valid_height, valid_width = weight_mask.shape
+            tile_region = tile_data[:valid_height, :valid_width]
+
             # Add votes for each class
             for class_idx in range(num_classes):
-                class_mask = (tile_data == class_idx).astype(np.float32)
+                class_mask = (tile_region == class_idx).astype(np.float32)
                 class_confidences[class_idx, row_slice, col_slice] += class_mask * weight_mask
         
         # Get class with highest confidence at each pixel

@@ -144,9 +144,9 @@ class Predictor:
         # Load volume
         volume = self.data_handler.load_h5(input_path, dataset_path)
         
-        # Create output volume
-        output = np.zeros_like(volume, dtype=np.float32)
-        counts = np.zeros_like(volume, dtype=np.float32)
+        # Create output volume lazily to support both binary and multi-class models
+        output = None
+        counts = None
         
         # Get axes to process
         axes = self._get_prediction_axes()
@@ -164,16 +164,31 @@ class Predictor:
                 
                 # Process all slices for this axis/rotation
                 axis_pred, axis_counts = self._predict_axis(volume, axis, angle)
-                
-                # Add to ensemble
-                output += axis_pred
-                counts += axis_counts
-        
-        # Average predictions
-        output = np.divide(output, counts, where=counts > 0)
-        
+
+                if output is None:
+                    output = axis_pred.copy()
+                    counts = axis_counts.copy()
+                else:
+                    output += axis_pred
+                    counts += axis_counts
+
+        if output is None:
+            logger.warning("No predictions were generated; saving empty volume")
+            output = np.zeros_like(volume, dtype=np.float32)
+            counts = np.ones_like(volume, dtype=np.float32)
+
+        # Average predictions while avoiding division by zero
+        averaged = np.zeros_like(output, dtype=np.float32)
+        np.divide(output, counts, out=averaged, where=counts > 0)
+
+        # Reduce multi-class probabilities to class indices before saving
+        if averaged.ndim == volume.ndim + 1:  # (C, D, H, W)
+            final_output = np.argmax(averaged, axis=0).astype(np.uint8)
+        else:
+            final_output = averaged
+
         # Convert to uint16 and save
-        self.data_handler.save_h5(output, output_path, dataset_path)
+        self.data_handler.save_h5(final_output, output_path, dataset_path)
         
         logger.info("Prediction complete!")
 
@@ -280,9 +295,9 @@ class Predictor:
         shape = self.axis_handler.get_volume_shape(axis, volume.shape)
         depth = shape[0]
         
-        # Create output arrays
-        output = np.zeros_like(volume, dtype=np.float32)
-        counts = np.zeros_like(volume, dtype=np.float32)
+        # Create output arrays lazily once we know how many channels the model returns
+        output = None
+        counts = None
         
         # Process in batches
         for start_idx in tqdm(range(0, depth, self.batch_size)):
@@ -311,30 +326,51 @@ class Predictor:
             
             # Get predictions
             pred_batch = self.model(batch_tensor)
-            
+            num_channels = pred_batch.size(1)
+
+            # Initialize storage arrays once we know how many channels are produced
+            if output is None:
+                if num_channels > 1:
+                    output = np.zeros((num_channels,) + volume.shape, dtype=np.float32)
+                    counts = np.zeros_like(output)
+                else:
+                    output = np.zeros_like(volume, dtype=np.float32)
+                    counts = np.zeros_like(volume, dtype=np.float32)
+
             # For multi-class, use softmax instead of sigmoid
-            if pred_batch.size(1) > 1:  # Multi-class case
+            if num_channels > 1:  # Multi-class case
                 # Apply softmax to get class probabilities
                 pred_batch = torch.softmax(pred_batch, dim=1)
-                
+
                 # Process each slice in batch
                 for batch_idx, idx in enumerate(range(start_idx, end_idx)):
                     pred_slice = pred_batch[batch_idx]
-                    
+
                     # Rotate back if needed
                     pred_np = pred_slice.cpu().numpy()
                     if rotation_angle != 0:
                         # For multi-class, rotate each channel separately
                         for c in range(pred_np.shape[0]):
-                            pred_np[c] = self.axis_handler.rotate_slice(pred_np[c:c+1], -rotation_angle)[0]
-                    
+                            pred_np[c] = self.axis_handler.rotate_slice(
+                                pred_np[c:c+1], -rotation_angle
+                            )[0]
+
                     # Add to output - for each class
-                    self.axis_handler.set_slice(output, axis, idx, pred_np, out=output)
-                    self.axis_handler.set_slice(counts, axis, idx, np.ones_like(pred_np), out=counts)
+                    for class_idx in range(pred_np.shape[0]):
+                        self.axis_handler.set_slice(
+                            output[class_idx], axis, idx, pred_np[class_idx], out=output[class_idx]
+                        )
+                        self.axis_handler.set_slice(
+                            counts[class_idx],
+                            axis,
+                            idx,
+                            np.ones_like(pred_np[class_idx]),
+                            out=counts[class_idx],
+                        )
             else:
                 # Binary case - use sigmoid
                 pred_batch = torch.sigmoid(pred_batch)
-                
+
                 # Process each slice in batch
                 for batch_idx, idx in enumerate(range(start_idx, end_idx)):
                     pred_slice = pred_batch[batch_idx]
@@ -348,6 +384,10 @@ class Predictor:
                     self.axis_handler.set_slice(output, axis, idx, pred_np, out=output)
                     self.axis_handler.set_slice(counts, axis, idx, np.ones_like(pred_np), out=counts)
         
+        if output is None:
+            output = np.zeros_like(volume, dtype=np.float32)
+            counts = np.zeros_like(volume, dtype=np.float32)
+
         return output, counts
 
     def _normalize_tile(self, tile: np.ndarray) -> torch.Tensor:

@@ -1,12 +1,13 @@
 """SegFormer model implementation."""
+
+import logging
+from dataclasses import dataclass
+from typing import List
+
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
 import transformers
-import logging
-from dataclasses import dataclass
-from typing import List, Dict
-import os
 
 logger = logging.getLogger(__name__)
 
@@ -41,80 +42,106 @@ class MiTVariants:
         raise ValueError(f"Could not determine MiT variant from model name: {model_name}")
 
 class CustomSegformer(nn.Module):
-    def __init__(self, encoder_name="nvidia/mit-b0", num_classes=1, pretrained=True, 
-                 ignore_mismatched_sizes=True):
+    """Wrapper around :class:`~transformers.SegformerModel` with grayscale support."""
+
+    def __init__(
+        self,
+        encoder_name: str = "nvidia/mit-b0",
+        num_classes: int = 1,
+        pretrained: bool = True,
+        ignore_mismatched_sizes: bool = True,
+        in_channels: int = 1,
+        cache_dir: str = ".model_cache",
+    ) -> None:
         super().__init__()
-        
-        logger.info(f"Initializing SegFormer with encoder: {encoder_name}")
-        
-        # Initialize the SegFormer backbone
-        cache_dir = ".model_cache"  # Local cache directory
-        logger.info(f"Using cache directory: {cache_dir}")
-        
-        # Try to load local model first
-        try:
-           self.backbone = transformers.SegformerModel.from_pretrained(
-                encoder_name,
-                num_labels=num_classes,
-                ignore_mismatched_sizes=ignore_mismatched_sizes,
-                output_hidden_states=True,
-                cache_dir=cache_dir,
-                local_files_only=True,
-                use_safetensors=True  # Force safetensors for security (PyTorch < 2.6)
-            )
-           logger.info(f"Successfully loaded model from local cache.")
-        except Exception as e:
-            logger.warning(f"Could not load local model: {e}")
-            logger.info(f"Attempting to download model from Hugging Face Hub")
-            self.backbone = transformers.SegformerModel.from_pretrained(
-                encoder_name,
-                num_labels=num_classes,
-                ignore_mismatched_sizes=ignore_mismatched_sizes,
-                output_hidden_states=True,
-                cache_dir=cache_dir,
-                use_safetensors=True  # Force safetensors for security (PyTorch < 2.6)
-            )
-            logger.info(f"Successfully downloaded and saved model to local cache.")
-            
-        # Get model configuration and actual encoder channels
+        logger.info("Initializing SegFormer with encoder '%s'", encoder_name)
+        logger.info("Using cache directory: %s", cache_dir)
+
+        if pretrained:
+            # Try to load local model first for reproducibility in offline environments
+            try:
+                self.backbone = transformers.SegformerModel.from_pretrained(
+                    encoder_name,
+                    num_labels=num_classes,
+                    ignore_mismatched_sizes=ignore_mismatched_sizes,
+                    output_hidden_states=True,
+                    cache_dir=cache_dir,
+                    local_files_only=True,
+                    use_safetensors=True,
+                )
+                logger.info("Successfully loaded model from local cache.")
+            except Exception as local_error:  # pragma: no cover - depends on cache state
+                logger.warning("Could not load local model: %s", local_error)
+                logger.info("Attempting to download model from Hugging Face Hub")
+                self.backbone = transformers.SegformerModel.from_pretrained(
+                    encoder_name,
+                    num_labels=num_classes,
+                    ignore_mismatched_sizes=ignore_mismatched_sizes,
+                    output_hidden_states=True,
+                    cache_dir=cache_dir,
+                    use_safetensors=True,
+                )
+                logger.info("Successfully downloaded and cached model.")
+        else:
+            logger.info("Initializing SegFormer from configuration (no pretrained weights)")
+            try:
+                config = transformers.SegformerConfig.from_pretrained(encoder_name)
+                logger.info("Loaded configuration from '%s'", encoder_name)
+            except Exception as config_error:
+                logger.warning(
+                    "Falling back to default SegformerConfig: %s", config_error
+                )
+                config = transformers.SegformerConfig()
+            config.num_labels = num_classes
+            config.num_channels = in_channels
+            self.backbone = transformers.SegformerModel(config)
+
+        # Record configuration details and hidden sizes
         try:
             self.mit_config = MiTVariants.get_config(encoder_name)
-            encoder_hidden_states = self.backbone.encoder.layer_norm
-            actual_channels = [layer.normalized_shape[0] for layer in encoder_hidden_states]
-            logger.info(f"Using MiT variant with:")
-            logger.info(f"  Expected hidden sizes: {self.mit_config.hidden_sizes}")
-            logger.info(f"  Actual encoder channels: {actual_channels}")
-            logger.info(f"  Decoder hidden size: {self.mit_config.decoder_hidden_size}")
-            logger.info(f"  Model size: {self.mit_config.params_m}M parameters")
-            self.encoder_channels = actual_channels
-        except ValueError as e:
-            logger.warning(f"Could not determine MiT variant: {e}")
-            logger.warning("Using default B0 configuration")
-            self.mit_config = MiTVariants.VARIANTS['b0']
-            self.encoder_channels = self.mit_config.hidden_sizes
-        
+        except ValueError:
+            logger.warning("Could not determine MiT variant, defaulting to B0 metadata")
+            self.mit_config = MiTVariants.VARIANTS["b0"]
+
+        hidden_sizes = list(getattr(self.backbone.config, "hidden_sizes", self.mit_config.hidden_sizes))
+        decoder_hidden_size = getattr(
+            self.backbone.config, "decoder_hidden_size", self.mit_config.decoder_hidden_size
+        )
+        logger.info("Encoder hidden sizes: %s", hidden_sizes)
+        logger.info("Decoder hidden size: %s", decoder_hidden_size)
+
+        self.encoder_channels = hidden_sizes
+
         # Create decoder components
-        hidden_size = self.mit_config.decoder_hidden_size
+        hidden_size = decoder_hidden_size
         self.linear_c = nn.Linear(sum(self.encoder_channels), hidden_size)
         self.linear_fuse = nn.Conv2d(hidden_size, hidden_size, kernel_size=1)
         self.classifier = nn.Conv2d(hidden_size, num_classes, kernel_size=1)
-        
-        # Modify input conv layer for grayscale
+
+        # Modify input conv layer for grayscale input when using pretrained weights
         if pretrained:
-            logger.info("Modifying input conv layer for 1 channel")
+            logger.info("Modifying input conv layer for %d channel(s)", in_channels)
             old_conv = self.backbone.encoder.patch_embeddings[0].proj
-            new_conv = nn.Conv2d(1, old_conv.out_channels, kernel_size=old_conv.kernel_size,
-                               stride=old_conv.stride, padding=old_conv.padding)
-            
+            new_conv = nn.Conv2d(
+                in_channels,
+                old_conv.out_channels,
+                kernel_size=old_conv.kernel_size,
+                stride=old_conv.stride,
+                padding=old_conv.padding,
+            )
+
             # Average the weights across RGB channels
-            logger.info("Initializing input conv from pre-trained weights (averaging RGB channels)")
+            logger.info(
+                "Initializing input conv from pre-trained weights (averaging RGB channels)"
+            )
             with torch.no_grad():
                 new_conv.weight.data = old_conv.weight.data.mean(dim=1, keepdim=True)
                 new_conv.bias.data = old_conv.bias.data
-                
+
             self.backbone.encoder.patch_embeddings[0].proj = new_conv
-            logger.info(f"Successfully modified input conv layer")
-    
+            self.backbone.config.num_channels = in_channels
+            logger.info("Successfully modified input conv layer")
+
     def _get_features(self, hidden_states):
         batch_size = hidden_states[0].shape[0]
         target_size = hidden_states[0].shape[2:]

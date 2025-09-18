@@ -6,9 +6,7 @@ import numpy as np
 import tifffile
 import torch
 from torch.utils.data import Dataset
-from multiprocessing import Lock
 import albumentations as A
-from tqdm import tqdm
 
 logger = logging.getLogger(__name__)
 
@@ -36,6 +34,7 @@ class SynchrotronDataset(Dataset):
         self.normalize = normalize
         self.maxworkers = maxworkers
         self.cache_size = cache_size
+        self._cache = {}
         self._invalid_indices = set()
         
         # Add this default initialization
@@ -248,27 +247,27 @@ class SynchrotronDataset(Dataset):
             image = np.expand_dims(image, 0)
         
         return torch.from_numpy(image)
-    
+
     def _apply_transforms(self, image: torch.Tensor, mask: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
-         """Apply transforms to image and mask pair"""
-         if not self.transform:
-             return image, mask
-         
-         # Convert tensors to numpy arrays
-         image_np = image.numpy()[0] # Remove the extra dimension
-         mask_np = mask.numpy()[0]
-         
-         # Store original mask dtype to preserve it after transforms
-         original_mask_dtype = mask_np.dtype
-         
-         transformed = self.transform(image=image_np, mask=mask_np)
-         
-         # Ensure mask has the right data type (important for int64 masks in multi-class segmentation)
-         transformed_mask = transformed['mask'].astype(original_mask_dtype)
-         
-         image = torch.from_numpy(np.expand_dims(transformed['image'], axis=0))
-         mask = torch.from_numpy(np.expand_dims(transformed_mask, axis=0))
-         return image, mask
+        """Apply transforms to image and mask pair."""
+        if not self.transform:
+            return image, mask
+
+        # Convert tensors to numpy arrays
+        image_np = image.numpy()[0]  # Remove the extra dimension
+        mask_np = mask.numpy()[0]
+
+        # Store original mask dtype to preserve it after transforms
+        original_mask_dtype = mask_np.dtype
+
+        transformed = self.transform(image=image_np, mask=mask_np)
+
+        # Ensure mask has the right data type (important for int64 masks in multi-class segmentation)
+        transformed_mask = transformed['mask'].astype(original_mask_dtype)
+
+        image = torch.from_numpy(np.expand_dims(transformed['image'], axis=0))
+        mask = torch.from_numpy(np.expand_dims(transformed_mask, axis=0))
+        return image, mask
     
     def __len__(self) -> int:
         return self.n_samples - len(self._invalid_indices)

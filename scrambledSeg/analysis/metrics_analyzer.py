@@ -438,7 +438,7 @@ class MetricsAnalyzer:
         return exported_files
     
     def _create_paper_table(self, analysis: TrainingAnalysis, latex_format: bool = True) -> str:
-        """Create a publication-ready metrics table."""
+        """Create a formatted metrics table suitable for publication."""
         # Select key metrics for paper
         key_metrics = {
             'val_iou': 'IoU',

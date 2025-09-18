@@ -91,14 +91,13 @@ def create_train_transform(config: Dict) -> A.Compose:
     transforms.append(
         A.Normalize(mean=0, std=1),  # Changed from mean=0.5, std=0.5 to keep original range
     )
-    
-    return A.Compose(
+
+    transform = A.Compose(
         transforms,
         additional_targets={'mask': 'mask'}
     )
-    
-    logger.info(f"Created training transform pipeline with {len(transforms)} transforms")
-    return A.Compose(transforms)
+    logger.info("Created training transform pipeline with %d transforms", len(transforms))
+    return transform
 
 def create_val_transform(config: Dict) -> A.Compose:
     """Create validation augmentation pipeline based on config.
@@ -114,8 +113,10 @@ def create_val_transform(config: Dict) -> A.Compose:
     transforms.append(
         A.Normalize(mean=0, std=1),  # Changed from mean=0.5, std=0.5 to keep original range
     )
-    logger.info("Created validation transform pipeline with normalization only")
-    return A.Compose(
+
+    transform = A.Compose(
         transforms,
         additional_targets={'mask': 'mask'}
     )
+    logger.info("Created validation transform pipeline with normalization only")
+    return transform

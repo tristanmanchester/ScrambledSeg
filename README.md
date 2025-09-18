@@ -99,7 +99,7 @@ The script expects:
 Training is configured via YAML files in the `configs/` directory:
 
 ```bash
-pixi run python -m scrambledSeg.training.train .\configs\training_config.yaml
+pixi run python -m scrambledSeg.training.train configs/training_config.yaml
 ```
 
 The configuration file specifies training parameters, data paths, and model architecture settings.
@@ -154,6 +154,13 @@ pixi run -- python predict_cli.py \
     --mode THREE_AXIS \
     --output_dir predictions \
     --batch_size 8 \
+    --encoder_name nvidia/segformer-b4-finetuned-ade-512-512 \
+    --num_classes 4 \
+    --in_channels 1 \
+    --tile_size 512 \
+    --tile_overlap 64 \
+    --precision bf16 \
+    --cache_dir .model_cache \
     --data_path /data
 ```
 
@@ -172,6 +179,17 @@ For multi-phase segmentation models:
    - H5 files: Integer arrays with class indices (0, 1, 2, 3, etc.)
    - TIFF files: Integer arrays with class indices, saved as uint8/uint16
 4. For visualization, use a discrete colormap (like 'tab10', 'Set1', or 'viridis') to view the results
+5. During inference, pass the same `--num_classes` (and `--in_channels` when applicable) to `predict_cli.py`.
+
+Key CLI options for inference workflows that mirror our experimental setup:
+
+- `--encoder_name`: Hugging Face model identifier (defaults to the ADE20k-finetuned SegFormer B4 backbone).
+- `--num_classes`: Controls how many discrete phases/materials are predicted. Include the background class.
+- `--in_channels`: Matches the number of channels used during training (typically 1 for tomography).
+- `--tile_size` / `--tile_overlap`: Tune tiling for large TIFFs. Default overlap is 64 pixels for smooth blending.
+- `--precision`: Choose between full precision (`32`), half precision (`16`), or BF16 (`bf16`) on supported GPUs.
+- `--cache_dir`: Location used to cache Hugging Face model weights for offline reproducibility.
+- `--no_pretrained`: Skip downloading pretrained weights and initialize the SegFormer from configuration only.
 
 Example visualization in Python:
 ```python
@@ -189,6 +207,19 @@ plt.colorbar(label='Phase')
 plt.title('Multi-Phase Segmentation')
 plt.savefig('multi_phase_result.png')
 ```
+
+## Testing and Validation
+
+To verify the core data loading and prediction utilities without requiring a GPU,
+run the lightweight test suite:
+
+```bash
+pytest
+```
+
+The tests create small synthetic datasets to exercise the multi-class data
+pipeline, ensuring that HDF5/TIFF handling, caching, and tiling work as expected
+in a reproducible CPU environment.
 
 ## Citation
 

@@ -77,20 +77,29 @@ class TomoDataset:
             with h5py.File(path, "w") as f:
                 f.create_dataset(dataset_path, data=data, dtype=np.uint8)
         else:
-            # Binary data - convert to uint16 if needed
-            if data.dtype != np.uint16:
-                logger.warning(f"Converting {data.dtype} to uint16...")
-                if data.dtype == np.float32 or data.dtype == np.float64:
-                    # Assume normalized [0, 1] data
-                    data = (data * 65535).astype(np.uint16)
-                else:
-                    data = data.astype(np.uint16)
-            
-            # Create parent directory if needed
-            Path(path).parent.mkdir(parents=True, exist_ok=True)
-            
-            with h5py.File(path, "w") as f:
-                f.create_dataset(dataset_path, data=data, dtype=np.uint16)
+            parent_dir = Path(path).parent
+            parent_dir.mkdir(parents=True, exist_ok=True)
+
+            if (
+                np.issubdtype(data.dtype, np.integer)
+                and data.ndim == 3
+                and data.max() <= 255
+            ):
+                logger.info("Detected integer class map; saving as uint8")
+                data = data.astype(np.uint8, copy=False)
+                with h5py.File(path, "w") as f:
+                    f.create_dataset(dataset_path, data=data, dtype=np.uint8)
+            else:
+                if data.dtype != np.uint16:
+                    logger.warning(f"Converting {data.dtype} to uint16...")
+                    if data.dtype in (np.float32, np.float64):
+                        # Assume normalized [0, 1] data
+                        data = (data * 65535).astype(np.uint16)
+                    else:
+                        data = data.astype(np.uint16)
+
+                with h5py.File(path, "w") as f:
+                    f.create_dataset(dataset_path, data=data, dtype=np.uint16)
         
         logger.info(f"Saved volume of shape {data.shape}")
         logger.info(f"Value range: [{data.min()}, {data.max()}]")
