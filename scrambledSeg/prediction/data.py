@@ -1,34 +1,37 @@
 """Data handling utilities for tomographic predictions."""
+
+import logging
+from pathlib import Path
+from typing import Optional
+
 import h5py
 import numpy as np
 import torch
-from pathlib import Path
-from typing import Optional
-import logging
 
 from .types import NormalizationRange, PathLike
 
 logger = logging.getLogger(__name__)
 
+
 class TomoDataset:
     """Handles loading, saving, and preprocessing of tomographic data."""
-    
+
     def __init__(self, normalize_range: Optional[NormalizationRange] = None):
         """Initialize dataset handler.
-        
+
         Args:
             normalize_range: Optional tuple of (min, max) values to use for normalization.
                            If None, will use the min/max of each slice.
         """
         self.normalize_range = normalize_range
-        
+
     def load_h5(self, path: PathLike, dataset_path: str = "/data") -> np.ndarray:
         """Load uint16 data from h5 file.
-        
+
         Args:
             path: Path to h5 file
             dataset_path: Path to dataset within h5 file
-            
+
         Returns:
             numpy array of shape (D, H, W) with uint16 dtype
         """
@@ -37,28 +40,28 @@ class TomoDataset:
             if dataset_path not in f:
                 raise ValueError(f"Dataset {dataset_path} not found in {path}")
             data = f[dataset_path][:]
-        
+
         if data.dtype != np.uint16:
             logger.warning(f"Expected uint16 data, got {data.dtype}. Converting...")
             data = data.astype(np.uint16)
-        
+
         logger.info(f"Loaded volume of shape {data.shape} and dtype {data.dtype}")
         logger.info(f"Value range: [{data.min()}, {data.max()}]")
         return data
-    
+
     def save_h5(self, data: np.ndarray, path: PathLike, dataset_path: str = "/data") -> None:
         """Save predictions to h5 file, handling both binary and multi-class data.
-        
+
         Args:
             data: numpy array to save
             path: Path to h5 file
             dataset_path: Path to dataset within h5 file
         """
         logger.info(f"Saving predictions to {path}")
-        
+
         # Check if this is multi-class data (multiple channels in axis 1)
         is_multi_channel = data.ndim > 3 and data.shape[1] > 1
-        
+
         if is_multi_channel:
             # Multi-class data - get class indices using argmax
             logger.info(f"Detected multi-class data with {data.shape[1]} classes")
@@ -71,11 +74,11 @@ class TomoDataset:
             elif data.ndim == 4:
                 # Apply argmax along channel dimension (axis 1)
                 data = np.argmax(data, axis=1).astype(np.uint8)
-            
+
             logger.info(f"Converted to class indices with shape {data.shape}")
             # Create parent directory if needed
             Path(path).parent.mkdir(parents=True, exist_ok=True)
-            
+
             with h5py.File(path, "w") as f:
                 f.create_dataset(dataset_path, data=data, dtype=np.uint8)
         else:
@@ -87,22 +90,22 @@ class TomoDataset:
                     data = (data * 65535).astype(np.uint16)
                 else:
                     data = data.astype(np.uint16)
-            
+
             # Create parent directory if needed
             Path(path).parent.mkdir(parents=True, exist_ok=True)
-            
+
             with h5py.File(path, "w") as f:
                 f.create_dataset(dataset_path, data=data, dtype=np.uint16)
-        
+
         logger.info(f"Saved volume of shape {data.shape}")
         logger.info(f"Value range: [{data.min()}, {data.max()}]")
-    
+
     def normalize_slice(self, slice_data: np.ndarray) -> torch.Tensor:
         """Convert slice to normalized tensor.
-        
+
         Args:
             slice_data: Numpy array of shape (H, W)
-            
+
         Returns:
             Normalized tensor of shape (1, 1, H, W)
         """
@@ -117,15 +120,17 @@ class TomoDataset:
         scale = max(max_value - min_value, 1e-6)
         slice_data = np.clip((slice_data - min_value) / scale, 0.0, 1.0)
 
-        slice_tensor = torch.tensor(slice_data.tolist(), dtype=torch.float32).unsqueeze(0).unsqueeze(0)
+        slice_tensor = (
+            torch.tensor(slice_data.tolist(), dtype=torch.float32).unsqueeze(0).unsqueeze(0)
+        )
         return slice_tensor
-    
+
     def denormalize_prediction(self, pred: torch.Tensor) -> np.ndarray:
         """Convert prediction tensor to appropriate output format.
-        
+
         Args:
             pred: Prediction tensor from model, shape (1, C, H, W)
-            
+
         Returns:
             For binary segmentation: Binary prediction as uint16 array
             For multi-class segmentation: Class indices as uint8 array
@@ -139,23 +144,23 @@ class TomoDataset:
             # Binary segmentation
             # Remove batch and channel dimensions
             pred_np = pred.squeeze().cpu().numpy()
-            
+
             # Convert to binary prediction
             pred_binary = (pred_np > 0.5).astype(np.uint16) * 65535
-            
+
             return pred_binary
-    
+
     def get_slice_stats(self, slice_data: np.ndarray) -> dict[str, float]:
         """Get statistics for a slice.
-        
+
         Args:
             slice_data: numpy array of any dtype
-            
+
         Returns:
             dict with min, max, mean values
         """
         return {
             "min": float(slice_data.min()),
             "max": float(slice_data.max()),
-            "mean": float(slice_data.mean())
+            "mean": float(slice_data.mean()),
         }

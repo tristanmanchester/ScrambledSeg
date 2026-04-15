@@ -2,10 +2,7 @@
 
 from __future__ import annotations
 
-from pathlib import Path
-
 import pytest
-
 
 np = pytest.importorskip("numpy")
 
@@ -37,5 +34,9 @@ def test_axis_predictor_supports_multichannel_volume_views() -> None:
     assert handler.get_volume_shape(Axis.XZ, volume.shape) == (3, 5, 2, 4)
     assert handler.get_volume_shape(Axis.YZ, volume.shape) == (4, 5, 2, 3)
 
-    assert np.array_equal(handler.get_slice(volume, Axis.XZ, 1), volume[:, :, 1, :].transpose(1, 0, 2))
-    assert np.array_equal(handler.get_slice(volume, Axis.YZ, 2), volume[:, :, :, 2].transpose(1, 0, 2))
+    assert np.array_equal(
+        handler.get_slice(volume, Axis.XZ, 1), volume[:, :, 1, :].transpose(1, 0, 2)
+    )
+    assert np.array_equal(
+        handler.get_slice(volume, Axis.YZ, 2), volume[:, :, :, 2].transpose(1, 0, 2)
+    )

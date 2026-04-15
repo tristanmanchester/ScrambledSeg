@@ -6,7 +6,6 @@ from pathlib import Path
 
 import pytest
 
-
 np = pytest.importorskip("numpy")
 tifffile = pytest.importorskip("tifffile")
 
@@ -42,7 +41,9 @@ def _disable_tensor_conversion(monkeypatch: pytest.MonkeyPatch) -> None:
     )
 
 
-def test_synchrotron_dataset_loads_without_cache(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+def test_synchrotron_dataset_loads_without_cache(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
     """cache_size=0 should still create a usable dataset and load the right sample."""
 
     dataset_root = _write_dataset(tmp_path)

@@ -147,9 +147,7 @@ class ConvergenceDetector:
             return float("inf")
 
         recent_std = np.mean(list(self.moving_std)[-3:])
-        value_range = (
-            max(self.values) - min(self.values) if len(self.values) > 1 else 1.0
-        )
+        value_range = max(self.values) - min(self.values) if len(self.values) > 1 else 1.0
 
         # Normalize std by the range of values
         normalized_std = recent_std / max(value_range, 1e-8)
@@ -252,15 +250,11 @@ class MultiMetricConvergenceAnalyzer:
         self.detectors: dict[str, ConvergenceDetector] = {}
 
         for metric_name, config in convergence_configs.items():
-            self.detectors[metric_name] = ConvergenceDetector(
-                metric_name=metric_name, **config
-            )
+            self.detectors[metric_name] = ConvergenceDetector(metric_name=metric_name, **config)
 
         self.global_convergence_state: GlobalConvergenceState = {}
 
-    def update(
-        self, metrics: dict[str, float], step: int
-    ) -> dict[str, ConvergenceState]:
+    def update(self, metrics: dict[str, float], step: int) -> dict[str, ConvergenceState]:
         """Update all detectors with new metric values."""
         states: dict[str, ConvergenceState] = {}
 
@@ -277,19 +271,13 @@ class MultiMetricConvergenceAnalyzer:
     def _update_global_state(self, states: dict[str, ConvergenceState], step: int) -> None:
         """Update global convergence analysis."""
         converged_metrics = sum(
-            1
-            for state in states.values()
-            if state.status == ConvergenceStatus.CONVERGED
+            1 for state in states.values() if state.status == ConvergenceStatus.CONVERGED
         )
         plateaued_metrics = sum(
-            1
-            for state in states.values()
-            if state.status == ConvergenceStatus.PLATEAUED
+            1 for state in states.values() if state.status == ConvergenceStatus.PLATEAUED
         )
         improving_metrics = sum(
-            1
-            for state in states.values()
-            if state.status == ConvergenceStatus.IMPROVING
+            1 for state in states.values() if state.status == ConvergenceStatus.IMPROVING
         )
 
         self.global_convergence_state = {
@@ -309,19 +297,13 @@ class MultiMetricConvergenceAnalyzer:
             return "unknown"
 
         converged_count = sum(
-            1
-            for state in states.values()
-            if state.status == ConvergenceStatus.CONVERGED
+            1 for state in states.values() if state.status == ConvergenceStatus.CONVERGED
         )
         plateaued_count = sum(
-            1
-            for state in states.values()
-            if state.status == ConvergenceStatus.PLATEAUED
+            1 for state in states.values() if state.status == ConvergenceStatus.PLATEAUED
         )
         improving_count = sum(
-            1
-            for state in states.values()
-            if state.status == ConvergenceStatus.IMPROVING
+            1 for state in states.values() if state.status == ConvergenceStatus.IMPROVING
         )
 
         total_count = len(states)
@@ -352,10 +334,7 @@ class MultiMetricConvergenceAnalyzer:
             return False
 
         # Stop if enough metrics have converged
-        if (
-            self.global_convergence_state.get("convergence_ratio", 0)
-            >= convergence_threshold
-        ):
+        if self.global_convergence_state.get("convergence_ratio", 0) >= convergence_threshold:
             logger.info(
                 f"Training convergence detected: {self.global_convergence_state['convergence_ratio']:.2%} of metrics converged"
             )
@@ -495,19 +474,11 @@ class ConvergenceCallback(pl.Callback):
         if global_state:
             trainer.logger.log_metrics(
                 {
-                    "convergence/global_status": global_state.get(
-                        "overall_status", "unknown"
-                    ),
-                    "convergence/convergence_ratio": global_state.get(
-                        "convergence_ratio", 0
-                    ),
+                    "convergence/global_status": global_state.get("overall_status", "unknown"),
+                    "convergence/convergence_ratio": global_state.get("convergence_ratio", 0),
                     "convergence/plateau_ratio": global_state.get("plateau_ratio", 0),
-                    "convergence/converged_metrics": global_state.get(
-                        "converged_metrics", 0
-                    ),
-                    "convergence/plateaued_metrics": global_state.get(
-                        "plateaued_metrics", 0
-                    ),
+                    "convergence/converged_metrics": global_state.get("converged_metrics", 0),
+                    "convergence/plateaued_metrics": global_state.get("plateaued_metrics", 0),
                 },
                 step=trainer.global_step,
             )

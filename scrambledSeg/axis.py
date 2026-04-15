@@ -50,7 +50,9 @@ class AxisPredictor:
 
         volume_view = self._get_view(volume, axis)
         if idx < 0 or idx >= volume_view.shape[0]:
-            raise ValueError(f"Invalid index {idx} for axis {axis}. Must be between 0 and {volume_view.shape[0] - 1}")
+            raise ValueError(
+                f"Invalid index {idx} for axis {axis}. Must be between 0 and {volume_view.shape[0] - 1}"
+            )
 
         return volume_view[idx]
 
@@ -71,7 +73,9 @@ class AxisPredictor:
 
         out_view = self._get_view(out, axis)
         if idx < 0 or idx >= out_view.shape[0]:
-            raise ValueError(f"Invalid index {idx} for axis {axis}. Must be between 0 and {out_view.shape[0] - 1}")
+            raise ValueError(
+                f"Invalid index {idx} for axis {axis}. Must be between 0 and {out_view.shape[0] - 1}"
+            )
 
         out_view[idx] = slice_data
         return out

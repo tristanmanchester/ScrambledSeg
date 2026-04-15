@@ -64,30 +64,23 @@ This extension makes ScrambledSeg suitable for complex material science applicat
 
 ## Requirements
 
-- Python 3.10
+- Python 3.12
 - PyTorch >= 2.0.0
 - PyTorch Lightning >= 2.0.0
 - Albumentations >= 2.0.0
 - transformers >= 4.30.0
 - CUDA-capable GPU with 8+ GB memory recommended (CPU execution is also supported for experimentation)
 
-See [`pixi.toml`](pixi.toml) for the complete dependency list and reproducible environment specification.
+See [`pyproject.toml`](pyproject.toml) and [`uv.lock`](uv.lock) for the complete dependency list and reproducible environment specification.
 
 ## Quick Start
 
 ### Environment Setup
 
-This project uses `pixi` for environment management. To get started:
+This project uses `uv` for environment management and command execution. To get started:
 
-1. Install pixi if you haven't already:
 ```bash
-curl -fsSL https://pixi.sh/install.sh | bash
-```
-
-2. Create and activate the environment:
-```bash
-pixi install
-pixi shell
+uv sync --dev
 ```
 
 ### Data Preprocessing
@@ -97,14 +90,8 @@ The preprocessing script prepares 3D volumes for training by:
 2. Organizing slices into train (80%), validation (10%), and test (10%) sets
 
 ```bash
-# If in a pixi shell
-python data/preprocess_volumes.py \
-  --data-dir /path/to/raw/data \
-  --label-dir /path/to/raw/labels \
-  --output-dir /path/to/processed/data
-
-# Or using pixi from the system shell
-pixi run python data/preprocess_volumes.py \
+# Using the packaged CLI
+uv run scrambledseg-preprocess \
   --data-dir /path/to/raw/data \
   --label-dir /path/to/raw/labels \
   --output-dir /path/to/processed/data
@@ -120,7 +107,7 @@ The script expects:
 Training is configured via YAML files in the [`configs/`](configs) directory. The default configuration is [`training_config.yaml`](configs/training_config.yaml).
 
 ```bash
-pixi run python -m scrambledSeg.training.train configs/training_config.yaml
+uv run scrambledseg-train configs/training_config.yaml
 ```
 
 Key options are documented inline in the configuration file. Update the dataset locations, number of classes, and optimisation settings to match your experiment.
@@ -166,10 +153,10 @@ The CLI supports single-axis, three-axis, and twelve-axis prediction modes:
 
 ```bash
 # Basic usage
-pixi run python predict_cli.py /path/to/input.h5 /path/to/checkpoint.ckpt
+uv run scrambledseg-predict /path/to/input.h5 /path/to/checkpoint.ckpt
 
 # Advanced options
-pixi run python predict_cli.py \
+uv run scrambledseg-predict \
     /path/to/input.h5 \
     /path/to/checkpoint.ckpt \
     --mode THREE_AXIS \
@@ -217,7 +204,11 @@ plt.savefig('multi_phase_result.png')
 ```
 ScrambledSeg/
 ├── configs/                 # Experiment configuration files
+├── .python-version
 ├── scrambledSeg/
+├── pyproject.toml           # Project metadata, dependencies, and tool config
+├── uv.lock                  # Reproducible uv lockfile
+├── predict_cli.py           # Compatibility wrapper for the packaged prediction CLI
 │   ├── analysis/            # Training analysis utilities
 │   ├── data/                # Dataset definitions and preprocessing helpers
 │   ├── losses/              # Loss functions and factory utilities
@@ -225,7 +216,6 @@ ScrambledSeg/
 │   ├── prediction/          # Inference utilities and ensembles
 │   ├── training/            # Training loop, callbacks, and progress reporting
 │   └── visualization/       # Callbacks and helpers for qualitative outputs
-├── predict_cli.py           # Command-line prediction entry point
 ├── slice_generator_projection.py
 └── potential_improvements.md
 ```
@@ -235,12 +225,13 @@ ScrambledSeg/
 Unit tests cover critical numerical components such as loss functions and training analytics. Run the full suite with:
 
 ```bash
-pixi run pytest
+uv run pytest
+uv run pytest --cov=scrambledSeg
 ```
 
 ## Contributing
 
-Contributions are welcome. Please open an issue to discuss significant changes and run `pixi run pytest` to verify updates before opening a pull request.
+Contributions are welcome. Please open an issue to discuss significant changes and run `uv run pytest` to verify updates before opening a pull request.
 
 ## Citation
 

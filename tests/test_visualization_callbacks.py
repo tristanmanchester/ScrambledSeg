@@ -7,7 +7,6 @@ from types import SimpleNamespace
 
 import pytest
 
-
 np = pytest.importorskip("numpy")
 pd = pytest.importorskip("pandas")
 torch = pytest.importorskip("torch")
@@ -35,7 +34,9 @@ class StubVisualizer:
     def find_interesting_slices(self, masks, num_samples: int):
         return self.interesting_indices
 
-    def visualize_prediction(self, image, mask, prediction, save_path: str, class_values=None) -> None:
+    def visualize_prediction(
+        self, image, mask, prediction, save_path: str, class_values=None
+    ) -> None:
         self.visualizations.append(
             {
                 "save_path": save_path,

@@ -1,0 +1,65 @@
+[build-system]
+requires = ["hatchling>=1.27.0"]
+build-backend = "hatchling.build"
+
+[project]
+name = "scrambledseg"
+version = "0.1.0"
+description = "SegFormer-based segmentation pipeline for synchrotron X-ray computed tomography."
+readme = "README.md"
+requires-python = ">=3.12,<3.13"
+license = { file = "LICENSE" }
+dependencies = [
+  "albumentations==2.0.5",
+  "h5py",
+  "imagecodecs",
+  "kiwisolver>=1.4.7,<2",
+  "matplotlib",
+  "numpy>=1.24.0",
+  "pandas",
+  "pillow>=9.5.0",
+  "psutil>=7.0.0,<8",
+  "pytorch-lightning>=2.0.0",
+  "pytz>=2024.2,<2025",
+  "pyyaml",
+  "rich>=13.0.0",
+  "scikit-image>=0.25.2,<0.26",
+  "scipy",
+  "seaborn>=0.13.2,<0.14",
+  "tifffile",
+  "timm>=0.9.0",
+  "torch>=2.0.0",
+  "torchmetrics",
+  "torchvision>=0.15.0",
+  "tqdm",
+  "transformers>=4.30.0",
+]
+
+[project.scripts]
+scrambledseg-train = "scrambledSeg.training.train:cli"
+scrambledseg-predict = "scrambledSeg.predict_cli:main"
+scrambledseg-preprocess = "scrambledSeg.data.preprocess_volumes:main"
+
+[dependency-groups]
+dev = [
+  "pytest>=8.3.4,<9",
+  "pytest-cov>=4.1.0,<5",
+  "ruff>=0.11.0",
+]
+
+[tool.hatch.build.targets.wheel]
+packages = ["scrambledSeg"]
+
+[tool.ruff]
+target-version = "py312"
+line-length = 100
+src = ["scrambledSeg", "tests"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I"]
+ignore = ["E501"]
+
+[tool.ruff.lint.per-file-ignores]
+"scrambledSeg/data/preprocess_volumes.py" = ["E402"]
+"scrambledSeg/visualization/core.py" = ["E402"]
+"tests/**/*.py" = ["E402"]

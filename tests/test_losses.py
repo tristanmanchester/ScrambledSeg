@@ -2,10 +2,7 @@
 
 from __future__ import annotations
 
-from pathlib import Path
-
 import pytest
-
 
 pytest.importorskip("numpy")
 from scrambledSeg.losses import (

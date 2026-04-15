@@ -6,7 +6,6 @@ from pathlib import Path
 
 import pytest
 
-
 pytest.importorskip("numpy")
 pytest.importorskip("scipy")
 pytest.importorskip("matplotlib")

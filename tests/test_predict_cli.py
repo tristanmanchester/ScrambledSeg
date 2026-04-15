@@ -6,10 +6,9 @@ from pathlib import Path
 
 import pytest
 
-
 torch = pytest.importorskip("torch")
 
-import predict_cli
+from scrambledSeg import predict_cli
 
 
 class FakeSegformer:

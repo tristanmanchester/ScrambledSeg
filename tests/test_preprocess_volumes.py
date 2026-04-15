@@ -7,14 +7,19 @@ from pathlib import Path
 
 import pytest
 
-
 np = pytest.importorskip("numpy")
 tifffile = pytest.importorskip("tifffile")
 
-from scrambledSeg.data.preprocess_volumes import SliceInfo, create_datasets, extract_tiles_from_slice
+from scrambledSeg.data.preprocess_volumes import (
+    SliceInfo,
+    create_datasets,
+    extract_tiles_from_slice,
+)
 
 
-def test_extract_tiles_from_slice_covers_all_orientations_for_non_cubic_volume(tmp_path: Path) -> None:
+def test_extract_tiles_from_slice_covers_all_orientations_for_non_cubic_volume(
+    tmp_path: Path,
+) -> None:
     """Preprocessing should extract D/H/W slice families even when H and W exceed D."""
 
     data_volume = np.arange(24, dtype=np.float32).reshape(2, 3, 4)

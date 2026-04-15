@@ -1,18 +1,21 @@
 """Training module for SegFormer model."""
-import torch
-from datetime import datetime
-import torch.nn as nn
-import torch.nn.functional as F
-from torch.utils.data import DataLoader
-from torch.optim import Optimizer
-from torch.optim.lr_scheduler import _LRScheduler
-import pytorch_lightning as pl
-import torchmetrics
-from typing import Optional, TypedDict
+
 import logging
 import time
-import psutil
+from datetime import datetime
 from pathlib import Path
+from typing import Optional, TypedDict
+
+import psutil
+import pytorch_lightning as pl
+import torch
+import torch.nn as nn
+import torch.nn.functional as F
+import torchmetrics
+from torch.optim import Optimizer
+from torch.optim.lr_scheduler import _LRScheduler
+from torch.utils.data import DataLoader
+
 from ..visualization.callbacks import VisualizationCallback
 from ..visualization.core import SegmentationVisualizer
 
@@ -110,7 +113,7 @@ BatchTensors = dict[str, torch.Tensor]
 
 class SegformerTrainer(pl.LightningModule):
     """Trainer for SegFormer model."""
-    
+
     def __init__(
         self,
         model: nn.Module,
@@ -120,7 +123,7 @@ class SegformerTrainer(pl.LightningModule):
         optimizer: Optimizer,
         scheduler: Optional[_LRScheduler] = None,
         threshold_params: PredictionParams | None = None,
-        vis_dir: str = 'visualizations',
+        vis_dir: str = "visualizations",
         enable_memory_tracking: bool = False,
         enable_adaptive_batch_size: bool = False,
         target_gpu_util: float = 0.9,
@@ -129,13 +132,13 @@ class SegformerTrainer(pl.LightningModule):
         num_epochs: int = 100,
         gradient_clip_val: float = 1.0,
         visualization: VisualizationConfig | None = None,
-        log_dir: str = 'logs',
+        log_dir: str = "logs",
         test_mode: bool = False,
-        num_classes: int = 2
+        num_classes: int = 2,
     ):
         """Initialize trainer."""
         super().__init__()
-        
+
         # Store parameters
         self.model = model
         self.criterion = criterion
@@ -154,19 +157,19 @@ class SegformerTrainer(pl.LightningModule):
         self.validation_step_outputs: list[ValidationLossRecord] = []
 
         self.prediction_params: PredictionParams = threshold_params or {
-            'enable_cleanup': True,
-            'cleanup_kernel_size': 3,
-            'cleanup_threshold': 5,
-            'min_hole_size_factor': 64
+            "enable_cleanup": True,
+            "cleanup_kernel_size": 3,
+            "cleanup_threshold": 5,
+            "min_hole_size_factor": 64,
         }
 
         self.log_dir = Path(log_dir)
         if test_mode:
-            self.log_dir = self.log_dir / 'test'
+            self.log_dir = self.log_dir / "test"
         self.log_dir.mkdir(parents=True, exist_ok=True)
 
-        self.vis_dir = self.log_dir / 'plots'
-        self.metrics_dir = self.log_dir / 'metrics'
+        self.vis_dir = self.log_dir / "plots"
+        self.metrics_dir = self.log_dir / "metrics"
         self.vis_dir.mkdir(parents=True, exist_ok=True)
         self.metrics_dir.mkdir(parents=True, exist_ok=True)
 
@@ -174,23 +177,25 @@ class SegformerTrainer(pl.LightningModule):
         self.vis_callback = VisualizationCallback(
             output_dir=str(self.vis_dir),
             metrics_dir=str(self.metrics_dir),
-            num_samples=vis_config.get('num_samples', 4),
-            min_coverage=vis_config.get('min_coverage', 0.05),
-            dpi=vis_config.get('dpi', 300),
+            num_samples=vis_config.get("num_samples", 4),
+            min_coverage=vis_config.get("min_coverage", 0.05),
+            dpi=vis_config.get("dpi", 300),
             enable_memory_tracking=enable_memory_tracking,
             num_classes=num_classes,
             visualizer=SegmentationVisualizer(
-                metrics_file=str(self.metrics_dir / 'metrics.csv'),
-                min_coverage=vis_config.get('min_coverage', 0.05),
-                dpi=vis_config.get('dpi', 300)
-            )
+                metrics_file=str(self.metrics_dir / "metrics.csv"),
+                min_coverage=vis_config.get("min_coverage", 0.05),
+                dpi=vis_config.get("dpi", 300),
+            ),
         )
 
         self.train_metrics = self._build_metric_collection(num_classes)
         self.val_metrics = self._build_metric_collection(num_classes)
-        self.val_confusion_matrix = torchmetrics.ConfusionMatrix(task="multiclass", num_classes=num_classes)
+        self.val_confusion_matrix = torchmetrics.ConfusionMatrix(
+            task="multiclass", num_classes=num_classes
+        )
 
-        self.class_names: list[str] = [f'Class_{i}' for i in range(num_classes)]
+        self.class_names: list[str] = [f"Class_{i}" for i in range(num_classes)]
         self.batch_start_time: float | None = None
         self.epoch_start_time: float | None = None
         self.total_training_samples = 0
@@ -198,14 +203,14 @@ class SegformerTrainer(pl.LightningModule):
         if not test_mode:
             logger.info("Saving hyperparameters...")
             save_params = {
-                'enable_memory_tracking': enable_memory_tracking,
-                'enable_adaptive_batch_size': enable_adaptive_batch_size,
-                'target_gpu_util': target_gpu_util,
-                'min_batch_size': min_batch_size,
-                'max_batch_size': max_batch_size,
-                'num_epochs': num_epochs,
-                'gradient_clip_val': gradient_clip_val,
-                'test_mode': test_mode
+                "enable_memory_tracking": enable_memory_tracking,
+                "enable_adaptive_batch_size": enable_adaptive_batch_size,
+                "target_gpu_util": target_gpu_util,
+                "min_batch_size": min_batch_size,
+                "max_batch_size": max_batch_size,
+                "num_epochs": num_epochs,
+                "gradient_clip_val": gradient_clip_val,
+                "test_mode": test_mode,
             }
             self.save_hyperparameters(save_params)
         else:
@@ -218,16 +223,32 @@ class SegformerTrainer(pl.LightningModule):
 
         return nn.ModuleDict(
             {
-                'iou': torchmetrics.JaccardIndex(task="multiclass", num_classes=num_classes),
-                'precision': torchmetrics.Precision(task="multiclass", num_classes=num_classes, average='macro'),
-                'recall': torchmetrics.Recall(task="multiclass", num_classes=num_classes, average='macro'),
-                'f1': torchmetrics.F1Score(task="multiclass", num_classes=num_classes, average='macro'),
-                'dice': DiceScore(num_classes=num_classes, average='macro', input_format='index'),
-                'specificity': torchmetrics.Specificity(task="multiclass", num_classes=num_classes, average='macro'),
-                'iou_per_class': torchmetrics.JaccardIndex(task="multiclass", num_classes=num_classes, average=None),
-                'precision_per_class': torchmetrics.Precision(task="multiclass", num_classes=num_classes, average=None),
-                'recall_per_class': torchmetrics.Recall(task="multiclass", num_classes=num_classes, average=None),
-                'f1_per_class': torchmetrics.F1Score(task="multiclass", num_classes=num_classes, average=None),
+                "iou": torchmetrics.JaccardIndex(task="multiclass", num_classes=num_classes),
+                "precision": torchmetrics.Precision(
+                    task="multiclass", num_classes=num_classes, average="macro"
+                ),
+                "recall": torchmetrics.Recall(
+                    task="multiclass", num_classes=num_classes, average="macro"
+                ),
+                "f1": torchmetrics.F1Score(
+                    task="multiclass", num_classes=num_classes, average="macro"
+                ),
+                "dice": DiceScore(num_classes=num_classes, average="macro", input_format="index"),
+                "specificity": torchmetrics.Specificity(
+                    task="multiclass", num_classes=num_classes, average="macro"
+                ),
+                "iou_per_class": torchmetrics.JaccardIndex(
+                    task="multiclass", num_classes=num_classes, average=None
+                ),
+                "precision_per_class": torchmetrics.Precision(
+                    task="multiclass", num_classes=num_classes, average=None
+                ),
+                "recall_per_class": torchmetrics.Recall(
+                    task="multiclass", num_classes=num_classes, average=None
+                ),
+                "f1_per_class": torchmetrics.F1Score(
+                    task="multiclass", num_classes=num_classes, average=None
+                ),
             }
         )
 
@@ -245,16 +266,16 @@ class SegformerTrainer(pl.LightningModule):
     ) -> dict[str, torch.Tensor]:
         """Update and return the current metric values for a phase."""
         return {
-            'iou': metrics['iou'](pred_labels, masks_for_metrics),
-            'precision': metrics['precision'](pred_labels, masks_for_metrics),
-            'recall': metrics['recall'](pred_labels, masks_for_metrics),
-            'f1': metrics['f1'](pred_labels, masks_for_metrics),
-            'dice': metrics['dice'](pred_labels, masks_for_metrics),
-            'specificity': metrics['specificity'](pred_labels, masks_for_metrics),
-            'iou_per_class': metrics['iou_per_class'](pred_labels, masks_for_metrics),
-            'precision_per_class': metrics['precision_per_class'](pred_labels, masks_for_metrics),
-            'recall_per_class': metrics['recall_per_class'](pred_labels, masks_for_metrics),
-            'f1_per_class': metrics['f1_per_class'](pred_labels, masks_for_metrics),
+            "iou": metrics["iou"](pred_labels, masks_for_metrics),
+            "precision": metrics["precision"](pred_labels, masks_for_metrics),
+            "recall": metrics["recall"](pred_labels, masks_for_metrics),
+            "f1": metrics["f1"](pred_labels, masks_for_metrics),
+            "dice": metrics["dice"](pred_labels, masks_for_metrics),
+            "specificity": metrics["specificity"](pred_labels, masks_for_metrics),
+            "iou_per_class": metrics["iou_per_class"](pred_labels, masks_for_metrics),
+            "precision_per_class": metrics["precision_per_class"](pred_labels, masks_for_metrics),
+            "recall_per_class": metrics["recall_per_class"](pred_labels, masks_for_metrics),
+            "f1_per_class": metrics["f1_per_class"](pred_labels, masks_for_metrics),
         }
 
     def get_predicted_labels(
@@ -263,10 +284,10 @@ class SegformerTrainer(pl.LightningModule):
         _targets: Optional[torch.Tensor] = None,
     ) -> torch.Tensor:
         """Get predicted class labels using argmax and optional cleanup.
-        
+
         Args:
             predictions: Model predictions (B, C, H, W)
-            
+
         Returns:
             Class prediction tensor (B, H, W) with integer class labels
         """
@@ -284,9 +305,9 @@ class SegformerTrainer(pl.LightningModule):
         num_classes = predictions.size(1)
         pred_one_hot = F.one_hot(pred_classes, num_classes).permute(0, 3, 1, 2).float()
 
-        if self.prediction_params.get('enable_cleanup', True):
-            kernel_size = self.prediction_params.get('cleanup_kernel_size', 3)
-            cleanup_threshold = self.prediction_params.get('cleanup_threshold', 5)
+        if self.prediction_params.get("enable_cleanup", True):
+            kernel_size = self.prediction_params.get("cleanup_kernel_size", 3)
+            cleanup_threshold = self.prediction_params.get("cleanup_threshold", 5)
 
             kernel_size = max(3, kernel_size + (kernel_size + 1) % 2)
             pad_size = kernel_size // 2
@@ -296,21 +317,20 @@ class SegformerTrainer(pl.LightningModule):
             cleaned_pred_one_hot = torch.zeros_like(pred_one_hot)
 
             for c in range(num_classes):
-                class_mask = pred_one_hot[:, c:c+1, :, :]
-                padded_mask = F.pad(class_mask, 
-                                    (pad_size, pad_size, pad_size, pad_size),
-                                    mode='constant', 
-                                    value=0)
+                class_mask = pred_one_hot[:, c : c + 1, :, :]
+                padded_mask = F.pad(
+                    class_mask, (pad_size, pad_size, pad_size, pad_size), mode="constant", value=0
+                )
                 connected = F.conv2d(padded_mask, cleanup_kernel, padding=0)
 
                 auto_threshold = (kernel_size * kernel_size) / 2
                 final_threshold = min(cleanup_threshold, auto_threshold)
 
-                cleaned_mask = torch.where(connected >= final_threshold, 
-                                          class_mask, 
-                                          torch.zeros_like(class_mask))
+                cleaned_mask = torch.where(
+                    connected >= final_threshold, class_mask, torch.zeros_like(class_mask)
+                )
 
-                cleaned_pred_one_hot[:, c:c+1, :, :] = cleaned_mask
+                cleaned_pred_one_hot[:, c : c + 1, :, :] = cleaned_mask
 
             cleaned_sum = torch.sum(cleaned_pred_one_hot, dim=1, keepdim=True)
             valid_mask = (cleaned_sum > 0).squeeze(1)
@@ -332,8 +352,8 @@ class SegformerTrainer(pl.LightningModule):
         """Training step with enhanced monitoring."""
         batch_start_time = time.time()
 
-        images = batch['image']
-        masks = batch['mask']
+        images = batch["image"]
+        masks = batch["mask"]
         batch_size = images.size(0)
         self.total_training_samples += batch_size
 
@@ -343,14 +363,14 @@ class SegformerTrainer(pl.LightningModule):
             mask_coverage = masks.float().mean().item()
         else:
             mask_coverage = masks.mean().item()
-        
+
         img_stats = {
-            'img_min': images.min().item(),
-            'img_max': images.max().item(),
-            'img_mean': images.mean().item(),
-            'mask_coverage': mask_coverage
+            "img_min": images.min().item(),
+            "img_max": images.max().item(),
+            "img_mean": images.mean().item(),
+            "mask_coverage": mask_coverage,
         }
-        self.log_dict({f'input/{k}': v for k, v in img_stats.items()}, on_step=True)
+        self.log_dict({f"input/{k}": v for k, v in img_stats.items()}, on_step=True)
 
         if torch.isnan(images).any() or torch.isnan(masks).any():
             logger.error("NaN detected in input tensors")
@@ -364,28 +384,28 @@ class SegformerTrainer(pl.LightningModule):
 
         if outputs.dtype in [torch.float16, torch.bfloat16, torch.float32, torch.float64]:
             output_stats = {
-                'out_min': outputs.min().item(),
-                'out_max': outputs.max().item(),
-                'out_mean': outputs.mean().item(),
-                'out_std': outputs.std().item(),
-                'unique_values': len(torch.unique(outputs)),
-                'zeros_pct': (outputs == 0).float().mean().item() * 100
+                "out_min": outputs.min().item(),
+                "out_max": outputs.max().item(),
+                "out_mean": outputs.mean().item(),
+                "out_std": outputs.std().item(),
+                "unique_values": len(torch.unique(outputs)),
+                "zeros_pct": (outputs == 0).float().mean().item() * 100,
             }
         else:
             outputs_float = outputs.float()
             output_stats = {
-                'out_min': outputs_float.min().item(),
-                'out_max': outputs_float.max().item(),
-                'out_mean': outputs_float.mean().item(),
-                'out_std': outputs_float.std().item(),
-                'unique_values': len(torch.unique(outputs)),
-                'zeros_pct': (outputs == 0).float().mean().item() * 100
+                "out_min": outputs_float.min().item(),
+                "out_max": outputs_float.max().item(),
+                "out_mean": outputs_float.mean().item(),
+                "out_std": outputs_float.std().item(),
+                "unique_values": len(torch.unique(outputs)),
+                "zeros_pct": (outputs == 0).float().mean().item() * 100,
             }
-        self.log_dict({f'output/{k}': v for k, v in output_stats.items()}, on_step=True)
+        self.log_dict({f"output/{k}": v for k, v in output_stats.items()}, on_step=True)
 
-        if output_stats.get('unique_values', 20) < 10:
+        if output_stats.get("unique_values", 20) < 10:
             logger.warning(f"Low variance in outputs: {output_stats}")
-        if output_stats.get('zeros_pct', 0) > 90:
+        if output_stats.get("zeros_pct", 0) > 90:
             logger.warning(f"Output mostly zeros: {output_stats}")
 
         if torch.isnan(outputs).any():
@@ -395,10 +415,8 @@ class SegformerTrainer(pl.LightningModule):
             return None
 
         loss = self.criterion(outputs, masks)
-        loss_stats = {
-            'loss_value': loss.item()
-        }
-        self.log_dict({f'loss/{k}': v for k, v in loss_stats.items()}, on_step=True)
+        loss_stats = {"loss_value": loss.item()}
+        self.log_dict({f"loss/{k}": v for k, v in loss_stats.items()}, on_step=True)
 
         if torch.isnan(loss).any():
             logger.error("NaN detected in loss calculation")
@@ -417,23 +435,25 @@ class SegformerTrainer(pl.LightningModule):
                 masks_for_metrics = masks_for_metrics.long()
             else:
                 masks_for_metrics = torch.round(masks_for_metrics).long()
-        
-        metric_values = self._compute_phase_metrics(self.train_metrics, pred_labels, masks_for_metrics)
-        iou = metric_values['iou']
-        precision = metric_values['precision']
-        recall = metric_values['recall']
-        f1 = metric_values['f1']
-        dice = metric_values['dice']
-        specificity = metric_values['specificity']
-        iou_per_class = metric_values['iou_per_class']
-        precision_per_class = metric_values['precision_per_class']
-        recall_per_class = metric_values['recall_per_class']
-        f1_per_class = metric_values['f1_per_class']
+
+        metric_values = self._compute_phase_metrics(
+            self.train_metrics, pred_labels, masks_for_metrics
+        )
+        iou = metric_values["iou"]
+        precision = metric_values["precision"]
+        recall = metric_values["recall"]
+        f1 = metric_values["f1"]
+        dice = metric_values["dice"]
+        specificity = metric_values["specificity"]
+        iou_per_class = metric_values["iou_per_class"]
+        precision_per_class = metric_values["precision_per_class"]
+        recall_per_class = metric_values["recall_per_class"]
+        f1_per_class = metric_values["f1_per_class"]
 
         batch_time = time.time() - batch_start_time
         samples_per_second = batch_size / batch_time if batch_time > 0 else 0
 
-        current_lr = self._optimizer.param_groups[0]['lr'] if self._optimizer else 0.0
+        current_lr = self._optimizer.param_groups[0]["lr"] if self._optimizer else 0.0
 
         total_grad_norm = 0.0
         param_count = 0
@@ -443,7 +463,7 @@ class SegformerTrainer(pl.LightningModule):
                 total_grad_norm += grad_norm.item() ** 2
                 param_count += param.numel()
 
-        total_grad_norm = (total_grad_norm ** 0.5) if total_grad_norm > 0 else 0.0
+        total_grad_norm = (total_grad_norm**0.5) if total_grad_norm > 0 else 0.0
         avg_grad_norm = total_grad_norm / max(param_count, 1)
 
         gpu_memory_used = 0.0
@@ -455,76 +475,95 @@ class SegformerTrainer(pl.LightningModule):
         cpu_percent = psutil.cpu_percent()
 
         training_metrics = {
-            'batch_time': batch_time,
-            'samples_per_second': samples_per_second,
-            'learning_rate': current_lr,
-            'gradient_norm': total_grad_norm,
-            'avg_gradient_norm': avg_grad_norm,
-            'gpu_memory_used_gb': gpu_memory_used,
-            'gpu_memory_total_gb': gpu_memory_total,
-            'cpu_percent': cpu_percent,
-            'total_samples_seen': self.total_training_samples
+            "batch_time": batch_time,
+            "samples_per_second": samples_per_second,
+            "learning_rate": current_lr,
+            "gradient_norm": total_grad_norm,
+            "avg_gradient_norm": avg_grad_norm,
+            "gpu_memory_used_gb": gpu_memory_used,
+            "gpu_memory_total_gb": gpu_memory_total,
+            "cpu_percent": cpu_percent,
+            "total_samples_seen": self.total_training_samples,
         }
 
-        self.log_dict({f'progress/{k}': v for k, v in training_metrics.items()}, on_step=True)
+        self.log_dict({f"progress/{k}": v for k, v in training_metrics.items()}, on_step=True)
 
         num_classes = outputs.size(1)
         pred_labels_float = pred_labels.float()
 
         pred_stats = {
-            'pred_coverage': (pred_labels_float > 0).float().mean().item(),
+            "pred_coverage": (pred_labels_float > 0).float().mean().item(),
         }
 
         for c in range(num_classes):
-            pred_stats[f'class_{c}_pct'] = (pred_labels == c).float().mean().item() * 100
-        self.log_dict({f'pred/{k}': v for k, v in pred_stats.items()}, on_step=True)
+            pred_stats[f"class_{c}_pct"] = (pred_labels == c).float().mean().item() * 100
+        self.log_dict({f"pred/{k}": v for k, v in pred_stats.items()}, on_step=True)
 
-        self.log('train_loss', loss, on_step=True, on_epoch=True, prog_bar=True)
-        self.log('train_iou', iou, on_step=True, on_epoch=True, prog_bar=True)
+        self.log("train_loss", loss, on_step=True, on_epoch=True, prog_bar=True)
+        self.log("train_iou", iou, on_step=True, on_epoch=True, prog_bar=True)
 
-        self.log('train_precision', precision, on_step=True, on_epoch=True)
-        self.log('train_recall', recall, on_step=True, on_epoch=True)
-        self.log('train_f1', f1, on_step=True, on_epoch=True)
-        self.log('train_dice', dice, on_step=True, on_epoch=True)
-        self.log('train_specificity', specificity, on_step=True, on_epoch=True)
+        self.log("train_precision", precision, on_step=True, on_epoch=True)
+        self.log("train_recall", recall, on_step=True, on_epoch=True)
+        self.log("train_f1", f1, on_step=True, on_epoch=True)
+        self.log("train_dice", dice, on_step=True, on_epoch=True)
+        self.log("train_specificity", specificity, on_step=True, on_epoch=True)
 
         for i, class_name in enumerate(self.class_names):
             if i < len(iou_per_class):
-                self.log(f'train_iou_{class_name.lower()}', iou_per_class[i], on_step=False, on_epoch=True)
-                self.log(f'train_precision_{class_name.lower()}', precision_per_class[i], on_step=False, on_epoch=True)
-                self.log(f'train_recall_{class_name.lower()}', recall_per_class[i], on_step=False, on_epoch=True)
-                self.log(f'train_f1_{class_name.lower()}', f1_per_class[i], on_step=False, on_epoch=True)
-        
+                self.log(
+                    f"train_iou_{class_name.lower()}",
+                    iou_per_class[i],
+                    on_step=False,
+                    on_epoch=True,
+                )
+                self.log(
+                    f"train_precision_{class_name.lower()}",
+                    precision_per_class[i],
+                    on_step=False,
+                    on_epoch=True,
+                )
+                self.log(
+                    f"train_recall_{class_name.lower()}",
+                    recall_per_class[i],
+                    on_step=False,
+                    on_epoch=True,
+                )
+                self.log(
+                    f"train_f1_{class_name.lower()}", f1_per_class[i], on_step=False, on_epoch=True
+                )
+
         return {
-            'loss': loss,
-            'train_iou': iou,
-            'train_precision': precision,
-            'train_recall': recall,
-            'train_f1': f1,
-            'train_dice': dice,
-            'train_specificity': specificity,
-            'output_stats': output_stats,
-            'pred_stats': pred_stats,
-            'training_metrics': training_metrics,
-            'per_class_metrics': {
-                'iou': iou_per_class,
-                'precision': precision_per_class,
-                'recall': recall_per_class,
-                'f1': f1_per_class
-            }
+            "loss": loss,
+            "train_iou": iou,
+            "train_precision": precision,
+            "train_recall": recall,
+            "train_f1": f1,
+            "train_dice": dice,
+            "train_specificity": specificity,
+            "output_stats": output_stats,
+            "pred_stats": pred_stats,
+            "training_metrics": training_metrics,
+            "per_class_metrics": {
+                "iou": iou_per_class,
+                "precision": precision_per_class,
+                "recall": recall_per_class,
+                "f1": f1_per_class,
+            },
         }
 
     def validation_step(self, batch: BatchTensors, batch_idx: int) -> ValidationStepOutput:
         """Validation step."""
-        images = batch['image']
-        masks = batch['mask']
-        
+        images = batch["image"]
+        masks = batch["mask"]
+
         outputs = self.model(images)
         if isinstance(outputs, tuple):
             outputs = outputs[0]
 
         masks_for_loss = masks.clone()
-        if isinstance(self.criterion, torch.nn.CrossEntropyLoss) or hasattr(self.criterion, 'ce_criterion'):
+        if isinstance(self.criterion, torch.nn.CrossEntropyLoss) or hasattr(
+            self.criterion, "ce_criterion"
+        ):
             if masks_for_loss.dim() == 4 and masks_for_loss.size(1) == 1:
                 masks_for_loss = masks_for_loss.squeeze(1)
 
@@ -551,86 +590,102 @@ class SegformerTrainer(pl.LightningModule):
                 masks_for_metrics = masks_for_metrics.long()
             else:
                 masks_for_metrics = torch.round(masks_for_metrics).long()
-        
-        metric_values = self._compute_phase_metrics(self.val_metrics, pred_labels, masks_for_metrics)
-        iou = metric_values['iou']
-        precision = metric_values['precision']
-        recall = metric_values['recall']
-        f1 = metric_values['f1']
-        dice = metric_values['dice']
-        specificity = metric_values['specificity']
-        iou_per_class = metric_values['iou_per_class']
-        precision_per_class = metric_values['precision_per_class']
-        recall_per_class = metric_values['recall_per_class']
-        f1_per_class = metric_values['f1_per_class']
 
-        self.log('val_loss', loss, on_step=True, on_epoch=False, prog_bar=True, sync_dist=True)
+        metric_values = self._compute_phase_metrics(
+            self.val_metrics, pred_labels, masks_for_metrics
+        )
+        iou = metric_values["iou"]
+        precision = metric_values["precision"]
+        recall = metric_values["recall"]
+        f1 = metric_values["f1"]
+        dice = metric_values["dice"]
+        specificity = metric_values["specificity"]
+        iou_per_class = metric_values["iou_per_class"]
+        precision_per_class = metric_values["precision_per_class"]
+        recall_per_class = metric_values["recall_per_class"]
+        f1_per_class = metric_values["f1_per_class"]
+
+        self.log("val_loss", loss, on_step=True, on_epoch=False, prog_bar=True, sync_dist=True)
         self.val_confusion_matrix.update(pred_labels, masks_for_metrics)
 
-        self.validation_step_outputs.append({
-            'val_loss': loss.detach()
-        })
-        
-        return {
-            'val_loss': loss,
-            'val_iou': iou,
-            'val_precision': precision,
-            'val_recall': recall,
-            'val_f1': f1,
-            'val_dice': dice,
-            'val_specificity': specificity,
-            'per_class_metrics': {
-                'iou': iou_per_class,
-                'precision': precision_per_class,
-                'recall': recall_per_class,
-                'f1': f1_per_class
-            }
-        }
+        self.validation_step_outputs.append({"val_loss": loss.detach()})
 
+        return {
+            "val_loss": loss,
+            "val_iou": iou,
+            "val_precision": precision,
+            "val_recall": recall,
+            "val_f1": f1,
+            "val_dice": dice,
+            "val_specificity": specificity,
+            "per_class_metrics": {
+                "iou": iou_per_class,
+                "precision": precision_per_class,
+                "recall": recall_per_class,
+                "f1": f1_per_class,
+            },
+        }
 
     def on_validation_epoch_end(self) -> None:
         """Compute and log validation metrics at epoch end."""
         if self.validation_step_outputs:
-            val_loss = torch.stack([x['val_loss'] for x in self.validation_step_outputs]).mean()
+            val_loss = torch.stack([x["val_loss"] for x in self.validation_step_outputs]).mean()
         else:
             val_loss = torch.tensor(0.0, device=self.device)
 
-        val_iou = self.val_metrics['iou'].compute()
-        val_precision = self.val_metrics['precision'].compute()
-        val_recall = self.val_metrics['recall'].compute()
-        val_f1 = self.val_metrics['f1'].compute()
-        val_dice = self.val_metrics['dice'].compute()
-        val_specificity = self.val_metrics['specificity'].compute()
-        iou_per_class = self.val_metrics['iou_per_class'].compute()
-        precision_per_class = self.val_metrics['precision_per_class'].compute()
-        recall_per_class = self.val_metrics['recall_per_class'].compute()
-        f1_per_class = self.val_metrics['f1_per_class'].compute()
+        val_iou = self.val_metrics["iou"].compute()
+        val_precision = self.val_metrics["precision"].compute()
+        val_recall = self.val_metrics["recall"].compute()
+        val_f1 = self.val_metrics["f1"].compute()
+        val_dice = self.val_metrics["dice"].compute()
+        val_specificity = self.val_metrics["specificity"].compute()
+        iou_per_class = self.val_metrics["iou_per_class"].compute()
+        precision_per_class = self.val_metrics["precision_per_class"].compute()
+        recall_per_class = self.val_metrics["recall_per_class"].compute()
+        f1_per_class = self.val_metrics["f1_per_class"].compute()
 
-        self.log('val_loss', val_loss, prog_bar=True, sync_dist=True)
-        self.log('val_iou', val_iou, prog_bar=True, sync_dist=True)
-        self.log('val_precision', val_precision, prog_bar=False, sync_dist=True)
-        self.log('val_recall', val_recall, prog_bar=False, sync_dist=True)
-        self.log('val_f1', val_f1, prog_bar=False, sync_dist=True)
-        self.log('val_dice', val_dice, prog_bar=False, sync_dist=True)
-        self.log('val_specificity', val_specificity, prog_bar=False, sync_dist=True)
-        self.log('val_loss_epoch', val_loss, prog_bar=True)
-        self.log('val_iou_epoch', val_iou, prog_bar=True)
-        self.log('val_precision_epoch', val_precision, prog_bar=True)
-        self.log('val_recall_epoch', val_recall, prog_bar=True)
-        self.log('val_f1_epoch', val_f1, prog_bar=True)
-        self.log('val_dice_epoch', val_dice, prog_bar=True)
-        self.log('val_specificity_epoch', val_specificity, prog_bar=True)
+        self.log("val_loss", val_loss, prog_bar=True, sync_dist=True)
+        self.log("val_iou", val_iou, prog_bar=True, sync_dist=True)
+        self.log("val_precision", val_precision, prog_bar=False, sync_dist=True)
+        self.log("val_recall", val_recall, prog_bar=False, sync_dist=True)
+        self.log("val_f1", val_f1, prog_bar=False, sync_dist=True)
+        self.log("val_dice", val_dice, prog_bar=False, sync_dist=True)
+        self.log("val_specificity", val_specificity, prog_bar=False, sync_dist=True)
+        self.log("val_loss_epoch", val_loss, prog_bar=True)
+        self.log("val_iou_epoch", val_iou, prog_bar=True)
+        self.log("val_precision_epoch", val_precision, prog_bar=True)
+        self.log("val_recall_epoch", val_recall, prog_bar=True)
+        self.log("val_f1_epoch", val_f1, prog_bar=True)
+        self.log("val_dice_epoch", val_dice, prog_bar=True)
+        self.log("val_specificity_epoch", val_specificity, prog_bar=True)
 
         for i, class_name in enumerate(self.class_names):
             if i < len(iou_per_class):
-                self.log(f'val_iou_{class_name.lower()}', iou_per_class[i], prog_bar=False, sync_dist=True)
-                self.log(f'val_precision_{class_name.lower()}', precision_per_class[i], prog_bar=False, sync_dist=True)
-                self.log(f'val_recall_{class_name.lower()}', recall_per_class[i], prog_bar=False, sync_dist=True)
-                self.log(f'val_f1_{class_name.lower()}', f1_per_class[i], prog_bar=False, sync_dist=True)
+                self.log(
+                    f"val_iou_{class_name.lower()}",
+                    iou_per_class[i],
+                    prog_bar=False,
+                    sync_dist=True,
+                )
+                self.log(
+                    f"val_precision_{class_name.lower()}",
+                    precision_per_class[i],
+                    prog_bar=False,
+                    sync_dist=True,
+                )
+                self.log(
+                    f"val_recall_{class_name.lower()}",
+                    recall_per_class[i],
+                    prog_bar=False,
+                    sync_dist=True,
+                )
+                self.log(
+                    f"val_f1_{class_name.lower()}", f1_per_class[i], prog_bar=False, sync_dist=True
+                )
 
         cm = self.val_confusion_matrix.compute()
         if cm is not None and cm.numel() > 0:
-            self.log('confusion_matrix_trace', torch.trace(cm), prog_bar=False)
+            self.log("confusion_matrix_trace", torch.trace(cm), prog_bar=False)
             self._log_confusion_matrix_analysis(cm)
             self._save_confusion_matrix(cm, self.current_epoch)
             self.val_confusion_matrix.reset()
@@ -642,23 +697,27 @@ class SegformerTrainer(pl.LightningModule):
         self.validation_step_outputs = []
         self._reset_metric_collection(self.val_metrics)
         self.val_confusion_matrix.reset()
-    
+
     def on_train_epoch_start(self) -> None:
         """Track epoch start time and reset counters."""
         self.epoch_start_time = time.time()
         self.total_training_samples = 0
         self._reset_metric_collection(self.train_metrics)
-        
+
     def on_train_epoch_end(self) -> None:
         """Log epoch-level training metrics."""
         if self.epoch_start_time is not None:
             epoch_time = time.time() - self.epoch_start_time
-            self.log('epoch_time_minutes', epoch_time / 60.0, on_epoch=True)
-            self.log('samples_per_epoch', self.total_training_samples, on_epoch=True)
-            
+            self.log("epoch_time_minutes", epoch_time / 60.0, on_epoch=True)
+            self.log("samples_per_epoch", self.total_training_samples, on_epoch=True)
+
             if epoch_time > 0:
-                self.log('epoch_samples_per_second', self.total_training_samples / epoch_time, on_epoch=True)
-    
+                self.log(
+                    "epoch_samples_per_second",
+                    self.total_training_samples / epoch_time,
+                    on_epoch=True,
+                )
+
     def _log_confusion_matrix_analysis(self, cm: torch.Tensor):
         """Log detailed confusion matrix analysis."""
         try:
@@ -676,10 +735,12 @@ class SegformerTrainer(pl.LightningModule):
 
             for i, class_name in enumerate(self.class_names):
                 if i < num_classes:
-                    self.log(f'cm_accuracy_{class_name.lower()}', class_accuracies[i], prog_bar=False)
-                    self.log(f'cm_precision_{class_name.lower()}', precision[i], prog_bar=False)
-                    self.log(f'cm_recall_{class_name.lower()}', recall[i], prog_bar=False)
-                    self.log(f'cm_f1_{class_name.lower()}', f1[i], prog_bar=False)
+                    self.log(
+                        f"cm_accuracy_{class_name.lower()}", class_accuracies[i], prog_bar=False
+                    )
+                    self.log(f"cm_precision_{class_name.lower()}", precision[i], prog_bar=False)
+                    self.log(f"cm_recall_{class_name.lower()}", recall[i], prog_bar=False)
+                    self.log(f"cm_f1_{class_name.lower()}", f1[i], prog_bar=False)
 
             overall_accuracy = torch.trace(cm) / torch.sum(cm)
             macro_precision = torch.mean(precision)
@@ -691,51 +752,51 @@ class SegformerTrainer(pl.LightningModule):
             weighted_recall = torch.sum(recall * class_support) / torch.sum(class_support)
             weighted_f1 = torch.sum(f1 * class_support) / torch.sum(class_support)
 
-            self.log('cm_overall_accuracy', overall_accuracy, prog_bar=False)
-            self.log('cm_macro_precision', macro_precision, prog_bar=False)
-            self.log('cm_macro_recall', macro_recall, prog_bar=False)
-            self.log('cm_macro_f1', macro_f1, prog_bar=False)
-            self.log('cm_weighted_precision', weighted_precision, prog_bar=False)
-            self.log('cm_weighted_recall', weighted_recall, prog_bar=False)
-            self.log('cm_weighted_f1', weighted_f1, prog_bar=False)
+            self.log("cm_overall_accuracy", overall_accuracy, prog_bar=False)
+            self.log("cm_macro_precision", macro_precision, prog_bar=False)
+            self.log("cm_macro_recall", macro_recall, prog_bar=False)
+            self.log("cm_macro_f1", macro_f1, prog_bar=False)
+            self.log("cm_weighted_precision", weighted_precision, prog_bar=False)
+            self.log("cm_weighted_recall", weighted_recall, prog_bar=False)
+            self.log("cm_weighted_f1", weighted_f1, prog_bar=False)
 
             class_distribution = class_support / torch.sum(class_support)
             entropy = -torch.sum(class_distribution * torch.log(class_distribution + 1e-8))
             max_entropy = torch.log(torch.tensor(num_classes, dtype=torch.float))
             normalized_entropy = entropy / max_entropy
 
-            self.log('cm_class_entropy', entropy, prog_bar=False)
-            self.log('cm_normalized_entropy', normalized_entropy, prog_bar=False)
+            self.log("cm_class_entropy", entropy, prog_bar=False)
+            self.log("cm_normalized_entropy", normalized_entropy, prog_bar=False)
 
         except Exception as e:
             logger.error(f"Error in confusion matrix analysis: {str(e)}")
-    
+
     def _save_confusion_matrix(self, cm: torch.Tensor, epoch: int):
         """Save confusion matrix to file for later analysis."""
         try:
             import json
 
-            cm_dir = self.log_dir / 'confusion_matrices'
+            cm_dir = self.log_dir / "confusion_matrices"
             cm_dir.mkdir(parents=True, exist_ok=True)
 
             cm_np = cm.detach().cpu().numpy()
 
             cm_data = {
-                'epoch': epoch,
-                'matrix': cm_np.tolist(),
-                'class_names': self.class_names,
-                'total_samples': int(torch.sum(cm).item()),
-                'timestamp': datetime.now().isoformat()
+                "epoch": epoch,
+                "matrix": cm_np.tolist(),
+                "class_names": self.class_names,
+                "total_samples": int(torch.sum(cm).item()),
+                "timestamp": datetime.now().isoformat(),
             }
 
-            cm_file = cm_dir / f'confusion_matrix_epoch_{epoch:03d}.json'
-            with open(cm_file, 'w') as f:
+            cm_file = cm_dir / f"confusion_matrix_epoch_{epoch:03d}.json"
+            with open(cm_file, "w") as f:
                 json.dump(cm_data, f, indent=2)
 
-            latest_file = cm_dir / 'confusion_matrix_latest.json'
-            with open(latest_file, 'w') as f:
+            latest_file = cm_dir / "confusion_matrix_latest.json"
+            with open(latest_file, "w") as f:
                 json.dump(cm_data, f, indent=2)
-                
+
         except Exception as e:
             logger.error(f"Error saving confusion matrix: {str(e)}")
 
@@ -745,16 +806,13 @@ class SegformerTrainer(pl.LightningModule):
             return self._optimizer
         return {
             "optimizer": self._optimizer,
-            "lr_scheduler": {
-                "scheduler": self._scheduler,
-                "interval": "step"
-            }
+            "lr_scheduler": {"scheduler": self._scheduler, "interval": "step"},
         }
-    
+
     def train_dataloader(self):
         """Return training dataloader."""
         return self._train_dataloader
-        
+
     def val_dataloader(self):
         """Return validation dataloader."""
         return self._val_dataloader

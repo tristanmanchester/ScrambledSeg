@@ -2,10 +2,7 @@
 
 from __future__ import annotations
 
-from pathlib import Path
-
 import pytest
-
 
 np = pytest.importorskip("numpy")
 torch = pytest.importorskip("torch")

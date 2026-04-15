@@ -89,19 +89,13 @@ def create_train_transform(config: TransformConfig) -> A.Compose:
 
     # Rotation with border handling
     if aug_config.get("rotate_limit", 0) > 0:
-        border_mode = _resolve_border_mode(
-            aug_config.get("rotate_border_mode", "constant")
-        )
+        border_mode = _resolve_border_mode(aug_config.get("rotate_border_mode", "constant"))
         transforms.append(
             A.Rotate(
                 limit=aug_config.get("rotate_limit", 360),
                 border_mode=border_mode,
-                fill=aug_config.get(
-                    "rotate_border_value", 0
-                ),  # Changed from border_value to fill
-                fill_mask=aug_config.get(
-                    "rotate_mask_border_value", 0
-                ),  # Added fill_mask
+                fill=aug_config.get("rotate_border_value", 0),  # Changed from border_value to fill
+                fill_mask=aug_config.get("rotate_mask_border_value", 0),  # Added fill_mask
                 p=aug_config.get("rotate_prob", 1.0),
             )
         )
@@ -141,15 +135,11 @@ def create_train_transform(config: TransformConfig) -> A.Compose:
     if aug_config.get("gaussian_noise_prob", 0) > 0:
         noise_limit = aug_config.get("gaussian_noise_limit", [0.005, 0.02])
         transforms.append(
-            A.GaussNoise(
-                std_range=noise_limit, p=aug_config.get("gaussian_noise_prob", 0.2)
-            )
+            A.GaussNoise(std_range=noise_limit, p=aug_config.get("gaussian_noise_prob", 0.2))
         )
 
     transforms.append(_create_normalize_transform())
-    logger.info(
-        f"Created training transform pipeline with {len(transforms)} transforms"
-    )
+    logger.info(f"Created training transform pipeline with {len(transforms)} transforms")
 
     return A.Compose(transforms, additional_targets={"mask": "mask"})
 

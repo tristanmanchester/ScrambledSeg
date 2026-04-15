@@ -1,39 +1,46 @@
 """Multi-axis prediction for tomographic segmentation and 2D image segmentation."""
-import numpy as np
-import torch
+
+import logging
 from enum import Enum
 from pathlib import Path
 from typing import List, Optional, Union
-import logging
+
+import numpy as np
+import torch
 from tqdm import tqdm
 
-from ..axis import AxisPredictor, Axis
+from ..axis import Axis, AxisPredictor
 from .data import TomoDataset
 from .tiff_utils import TiffHandler
 from .types import (
     NormalizationRange,
     PathLike,
     PredictionAccumulator,
-    TileLocation,
     TiledPrediction,
+    TileLocation,
 )
 
 logger = logging.getLogger(__name__)
 
+
 class PredictionMode(Enum):
     """Available prediction modes."""
+
     SINGLE_AXIS = "single"
     THREE_AXIS = "three"
     TWELVE_AXIS = "twelve"
 
+
 class EnsembleMethod(Enum):
     """Methods for combining multiple predictions."""
+
     MEAN = "mean"
     VOTING = "voting"
 
+
 class Predictor:
     """Handles both 3D volume and 2D image prediction."""
-    
+
     def __init__(
         self,
         model: torch.nn.Module,
@@ -44,10 +51,10 @@ class Predictor:
         normalize_range: Optional[NormalizationRange] = None,
         tile_size: int = 512,
         tile_overlap: int = 64,
-        precision: str = 'bf16'
+        precision: str = "bf16",
     ):
         """Initialize predictor.
-        
+
         Args:
             model: PyTorch model for prediction
             prediction_mode: Single axis, three axis, or twelve axis prediction
@@ -59,7 +66,7 @@ class Predictor:
             tile_overlap: Overlap between tiles
         """
         self.model = model
-        
+
         # Validate and convert prediction mode
         if isinstance(prediction_mode, str):
             try:
@@ -72,7 +79,7 @@ class Predictor:
         elif not isinstance(prediction_mode, PredictionMode):
             raise ValueError("prediction_mode must be a string or PredictionMode enum")
         self.prediction_mode = prediction_mode
-        
+
         # Validate and convert ensemble method
         if isinstance(ensemble_method, str):
             try:
@@ -85,30 +92,30 @@ class Predictor:
         elif not isinstance(ensemble_method, EnsembleMethod):
             raise ValueError("ensemble_method must be a string or EnsembleMethod enum")
         self.ensemble_method = ensemble_method
-        
+
         self.batch_size = batch_size
         self.device = device or ("cuda" if torch.cuda.is_available() else "cpu")
-        
+
         # Move model to device
         self.model = self.model.to(self.device)
         self.model.eval()
-        
+
         # Set precision for inference
         self.precision = precision
-        if precision == 'bf16' and torch.cuda.is_bf16_supported():
+        if precision == "bf16" and torch.cuda.is_bf16_supported():
             logger.info("Using BF16 precision for inference")
-        elif precision == '16' and torch.cuda.is_available():
+        elif precision == "16" and torch.cuda.is_available():
             logger.info("Using FP16 precision for inference")
         else:
             logger.info("Using FP32 precision for inference")
-            self.precision = '32'
-        
+            self.precision = "32"
+
         # Initialize handlers
         self.data_handler = TomoDataset(normalize_range=normalize_range)
         self.axis_handler = AxisPredictor()
         # Use larger default overlap for better edge handling
         self.tiff_handler = TiffHandler(tile_size=tile_size, overlap=tile_overlap or 128)
-        
+
         # Define rotations for 12-axis prediction
         self.rotations = [0, 90, 180, 270]
 
@@ -124,43 +131,37 @@ class Predictor:
 
     def _get_inference_dtype(self) -> torch.dtype:
         """Return the configured inference dtype for model execution."""
-        if self.precision == 'bf16' and torch.cuda.is_bf16_supported():
+        if self.precision == "bf16" and torch.cuda.is_bf16_supported():
             return torch.bfloat16
-        if self.precision == '16' and torch.cuda.is_available():
+        if self.precision == "16" and torch.cuda.is_available():
             return torch.float16
         return torch.float32
 
     def predict(
-        self,
-        input_path: PathLike,
-        output_path: PathLike,
-        dataset_path: str = "/data"
+        self, input_path: PathLike, output_path: PathLike, dataset_path: str = "/data"
     ) -> None:
         """Predict segmentation for input file.
-        
+
         Automatically detects file type (H5 or TIFF) and processes accordingly.
-        
+
         Args:
             input_path: Path to input file
             output_path: Path to output file
             dataset_path: Path to dataset within H5 files (only used for H5)
         """
         input_path = Path(input_path)
-        if input_path.suffix.lower() in ['.h5']:
+        if input_path.suffix.lower() in [".h5"]:
             self.predict_volume(input_path, output_path, dataset_path)
-        elif input_path.suffix.lower() in ['.tif', '.tiff']:
+        elif input_path.suffix.lower() in [".tif", ".tiff"]:
             self.predict_image(input_path, output_path)
         else:
             raise ValueError(f"Unsupported file type: {input_path.suffix}")
 
     def predict_volume(
-        self, 
-        input_path: PathLike,
-        output_path: PathLike,
-        dataset_path: str = "/data"
+        self, input_path: PathLike, output_path: PathLike, dataset_path: str = "/data"
     ) -> None:
         """Predict segmentation for entire volume.
-        
+
         Args:
             input_path: Path to input h5 file
             output_path: Path to output h5 file
@@ -168,40 +169,42 @@ class Predictor:
         """
         # Load volume
         volume = self.data_handler.load_h5(input_path, dataset_path)
-        
+
         output = None
         counts = None
-        
+
         # Get axes to process
         axes = self._get_prediction_axes()
-        
+
         # Process each axis
         for axis in axes:
             logger.info(f"Processing axis: {axis.name}")
-            
+
             # Get rotations for this axis
-            rotations = self.rotations if self.prediction_mode == PredictionMode.TWELVE_AXIS else [0]
-            
+            rotations = (
+                self.rotations if self.prediction_mode == PredictionMode.TWELVE_AXIS else [0]
+            )
+
             for angle in rotations:
                 if angle != 0:
                     logger.info(f"Rotating by {angle} degrees")
-                
+
                 # Process all slices for this axis/rotation
                 axis_pred, axis_counts = self._predict_axis(volume, axis, angle)
-                
+
                 # Add to ensemble
                 if output is None:
                     output = np.zeros_like(axis_pred, dtype=np.float32)
                     counts = np.zeros_like(axis_counts, dtype=np.float32)
                 output += axis_pred
                 counts += axis_counts
-        
+
         # Average predictions
         output = np.divide(output, counts, out=np.zeros_like(output), where=counts > 0)
-        
+
         # Convert to uint16 and save
         self.data_handler.save_h5(output, output_path, dataset_path)
-        
+
         logger.info("Prediction complete!")
 
     def predict_image(
@@ -210,48 +213,50 @@ class Predictor:
         output_path: PathLike,
     ) -> None:
         """Predict segmentation for image using tiling.
-        
+
         Args:
             input_path: Path to input TIFF file
             output_path: Path to output TIFF file
         """
         # Load image
         image = self.tiff_handler.load_tiff(input_path)
-        
+
         # Check if image is 3D (multipage TIFF)
         if len(image.shape) == 3 and image.shape[0] > 1:
-            logger.info(f"Detected 3D volume with {image.shape[0]} slices, processing slice by slice")
+            logger.info(
+                f"Detected 3D volume with {image.shape[0]} slices, processing slice by slice"
+            )
             # Process each slice separately and stack results
             all_results = []
-            
+
             for z in tqdm(range(image.shape[0])):
                 # Extract 2D slice
                 slice_2d = image[z]
-                
+
                 # Process this slice
                 slice_result = self._process_2d_image(slice_2d)
                 all_results.append(slice_result)
-            
+
             # Stack results along Z axis
             output = np.stack(all_results, axis=0)
-            
+
             # Save result
             self.tiff_handler.save_tiff(output, output_path)
             logger.info("Prediction complete!")
         else:
             # Process as 2D image
             output = self._process_2d_image(image)
-            
+
             # Save result
             self.tiff_handler.save_tiff(output, output_path)
             logger.info("Prediction complete!")
-    
+
     def _process_2d_image(self, image: np.ndarray) -> np.ndarray:
         """Process a 2D image using tiling.
-        
+
         Args:
             image: 2D input image of shape (H, W) or (H, W, C)
-            
+
         Returns:
             Processed image
         """
@@ -259,105 +264,107 @@ class Predictor:
         tiles: List[TiledPrediction] = []
         batch_tiles: List[torch.Tensor] = []
         batch_locations: List[TileLocation] = []
-        
+
         logger.info("Processing tiles...")
         for tile_data, location in tqdm(self.tiff_handler.iter_tiles(image)):
             # Normalize tile
             tile_tensor = self._normalize_tile(tile_data)
-            
+
             batch_tiles.append(tile_tensor)
             batch_locations.append(location)
-            
+
             # Process batch if full
             if len(batch_tiles) >= self.batch_size:
                 pred_tiles = self._predict_batch(batch_tiles)
                 tiles.extend(zip(pred_tiles, batch_locations))
                 batch_tiles = []
                 batch_locations = []
-        
+
         # Process remaining tiles
         if batch_tiles:
             pred_tiles = self._predict_batch(batch_tiles)
             tiles.extend(zip(pred_tiles, batch_locations))
-        
+
         # Merge tiles
         logger.info("Merging tiles...")
         output = self.tiff_handler.merge_tiles(tiles, image.shape[:2])
-        
+
         return output
 
     @torch.no_grad()
     def _predict_axis(
-        self, 
-        volume: np.ndarray,
-        axis: Axis,
-        rotation_angle: float = 0
+        self, volume: np.ndarray, axis: Axis, rotation_angle: float = 0
     ) -> PredictionAccumulator:
         """Predict all slices along an axis.
-        
+
         Args:
             volume: Input volume
             axis: Axis to predict along
             rotation_angle: Optional rotation to apply
-            
+
         Returns:
             Tuple of (predictions, count_mask)
         """
         # Get shape for this axis view
         shape = self.axis_handler.get_volume_shape(axis, volume.shape)
         depth = shape[0]
-        
+
         output = None
         counts = None
-        
+
         # Process in batches
         for start_idx in tqdm(range(0, depth, self.batch_size)):
             end_idx = min(start_idx + self.batch_size, depth)
             batch_slices = []
-            
+
             # Get batch of slices
             for idx in range(start_idx, end_idx):
                 # Extract and rotate slice if needed
                 slice_data = self.axis_handler.get_slice(volume, axis, idx)
                 if rotation_angle != 0:
                     slice_data = self.axis_handler.rotate_slice(slice_data, rotation_angle)
-                
+
                 # Normalize
                 slice_tensor = self.data_handler.normalize_slice(slice_data)
                 batch_slices.append(slice_tensor)
-            
+
             # Stack batch, convert to appropriate precision and predict
             batch_tensor = torch.cat(batch_slices, dim=0).to(
                 device=self.device,
                 dtype=self._get_inference_dtype(),
             )
-            
+
             # Get predictions
             pred_batch = self.model(batch_tensor)
-            
+
             # For multi-class, use softmax instead of sigmoid
             if pred_batch.size(1) > 1:  # Multi-class case
                 # Apply softmax to get class probabilities
                 pred_batch = torch.softmax(pred_batch, dim=1)
 
                 if output is None:
-                    output = np.zeros((volume.shape[0], pred_batch.size(1), volume.shape[1], volume.shape[2]), dtype=np.float32)
+                    output = np.zeros(
+                        (volume.shape[0], pred_batch.size(1), volume.shape[1], volume.shape[2]),
+                        dtype=np.float32,
+                    )
                     counts = np.zeros_like(output, dtype=np.float32)
-                
+
                 # Process each slice in batch
                 for batch_idx, idx in enumerate(range(start_idx, end_idx)):
                     pred_slice = pred_batch[batch_idx]
-                    
+
                     # Rotate back if needed
                     pred_np = self._tensor_to_numpy(pred_slice)
                     if rotation_angle != 0:
                         # For multi-class, rotate each channel separately
                         for c in range(pred_np.shape[0]):
                             pred_np[c] = self.axis_handler.rotate_slice(pred_np[c], -rotation_angle)
-                    
+
                     # Add to output - for each class
                     self.axis_handler.set_slice(output, axis, idx, pred_np, out=output)
-                    self.axis_handler.set_slice(counts, axis, idx, np.ones_like(pred_np), out=counts)
+                    self.axis_handler.set_slice(
+                        counts, axis, idx, np.ones_like(pred_np), out=counts
+                    )
             else:
                 # Binary case - use sigmoid
                 pred_batch = torch.sigmoid(pred_batch)
@@ -365,38 +372,40 @@ class Predictor:
                 if output is None:
                     output = np.zeros_like(volume, dtype=np.float32)
                     counts = np.zeros_like(volume, dtype=np.float32)
-                
+
                 # Process each slice in batch
                 for batch_idx, idx in enumerate(range(start_idx, end_idx)):
                     pred_slice = pred_batch[batch_idx]
-                    
+
                     # Rotate back if needed
                     pred_np = self._tensor_to_numpy(pred_slice)
                     if rotation_angle != 0:
                         pred_np = self.axis_handler.rotate_slice(pred_np, -rotation_angle)
-                    
+
                     # Add to output
                     self.axis_handler.set_slice(output, axis, idx, pred_np, out=output)
-                    self.axis_handler.set_slice(counts, axis, idx, np.ones_like(pred_np), out=counts)
-        
+                    self.axis_handler.set_slice(
+                        counts, axis, idx, np.ones_like(pred_np), out=counts
+                    )
+
         return output, counts
 
     def _normalize_tile(self, tile: np.ndarray) -> torch.Tensor:
         """Normalize tile data to tensor.
-        
+
         Args:
             tile: Input tile array
-            
+
         Returns:
             Normalized tensor of shape (1, C, H, W)
         """
         # Convert to float32
         tile = tile.astype(np.float32)
-        
+
         # Normalize to [0,1]
         if tile.max() > 1:
             tile = tile / 255.0
-            
+
         # Add batch and channel dimensions
         if len(tile.shape) == 2:  # Grayscale image: H x W
             tile = tile[None, None, :, :]  # B x C x H x W (where C=1)
@@ -406,16 +415,16 @@ class Predictor:
                 tile = tile.transpose(2, 0, 1)[None, :, :, :]  # B x C x H x W
             else:
                 raise ValueError(f"Unexpected tile shape: {tile.shape}. Expected 2D image.")
-            
+
         return torch.from_numpy(tile)
 
     @torch.no_grad()
     def _predict_batch(self, batch_tiles: List[torch.Tensor]) -> List[np.ndarray]:
         """Predict batch of tiles.
-        
+
         Args:
             batch_tiles: List of normalized tile tensors
-            
+
         Returns:
             List of prediction arrays
         """
@@ -425,18 +434,18 @@ class Predictor:
             device=self.device,
             dtype=self._get_inference_dtype(),
         )
-        
+
         # Get predictions
         pred_batch = self.model(batch_tensor)
-        
+
         # For multi-class, use softmax instead of sigmoid
         if pred_batch.size(1) > 1:  # Multi-class case
             # Apply softmax to get class probabilities
             pred_batch = torch.softmax(pred_batch, dim=1)
-            
+
             # Get class indices using argmax
             pred_class = torch.argmax(pred_batch, dim=1)
-            
+
             # Convert to numpy
             pred_tiles = []
             for pred in pred_class:
@@ -445,13 +454,13 @@ class Predictor:
         else:
             # Binary case - use sigmoid
             pred_batch = torch.sigmoid(pred_batch)
-            
+
             # Convert to numpy
             pred_tiles = []
             for pred in pred_batch:
                 pred_np = self._tensor_to_numpy(pred.squeeze())
                 pred_tiles.append(pred_np)
-            
+
         return pred_tiles
 
     def _get_prediction_axes(self) -> List[Axis]:

@@ -1,7 +1,9 @@
 """Rich progress callback for PyTorch Lightning training."""
+
 from collections.abc import Mapping
 
 import pytorch_lightning as pl
+import torch
 from rich.console import Console
 from rich.live import Live
 from rich.panel import Panel
@@ -15,7 +17,6 @@ from rich.progress import (
     TimeRemainingColumn,
 )
 from rich.table import Table
-import torch
 
 NumericMetricValue = torch.Tensor | float | int
 CallbackOutputs = torch.Tensor | Mapping[str, NumericMetricValue] | None
@@ -99,7 +100,11 @@ class RichProgressCallback(pl.Callback):
 
         self._update_metrics(trainer)
 
-        if self.live and hasattr(self.live, 'update') and (batch_idx - self.last_update_step) >= self.update_frequency:
+        if (
+            self.live
+            and hasattr(self.live, "update")
+            and (batch_idx - self.last_update_step) >= self.update_frequency
+        ):
             self.live.update(self._get_layout())
             self.last_update_step = batch_idx
 
@@ -108,8 +113,12 @@ class RichProgressCallback(pl.Callback):
         if not self.progress:
             return
 
-        if hasattr(trainer, 'val_dataloaders') and trainer.val_dataloaders:
-            val_loader = trainer.val_dataloaders[0] if isinstance(trainer.val_dataloaders, list) else trainer.val_dataloaders
+        if hasattr(trainer, "val_dataloaders") and trainer.val_dataloaders:
+            val_loader = (
+                trainer.val_dataloaders[0]
+                if isinstance(trainer.val_dataloaders, list)
+                else trainer.val_dataloaders
+            )
 
             if self.val_task is not None:
                 self.progress.remove_task(self.val_task)
@@ -136,7 +145,7 @@ class RichProgressCallback(pl.Callback):
         """Complete validation epoch."""
         self._update_metrics(trainer)
 
-        if self.live and hasattr(self.live, 'update'):
+        if self.live and hasattr(self.live, "update"):
             self.live.update(self._get_layout())
 
         if self.progress and self.val_task is not None:
@@ -163,9 +172,9 @@ class RichProgressCallback(pl.Callback):
     def _update_metrics(self, trainer: pl.Trainer) -> None:
         """Update metrics from trainer's logged metrics."""
         try:
-            if hasattr(trainer, 'callback_metrics'):
+            if hasattr(trainer, "callback_metrics"):
                 logged_metrics = trainer.callback_metrics
-            elif hasattr(trainer, 'logged_metrics'):
+            elif hasattr(trainer, "logged_metrics"):
                 logged_metrics = trainer.logged_metrics
             else:
                 return
@@ -178,9 +187,9 @@ class RichProgressCallback(pl.Callback):
                 else:
                     continue
 
-                if key.startswith('train_'):
+                if key.startswith("train_"):
                     self.train_metrics[key] = float_value
-                elif key.startswith('val_'):
+                elif key.startswith("val_"):
                     self.val_metrics[key] = float_value
 
         except Exception as exc:
@@ -192,7 +201,11 @@ class RichProgressCallback(pl.Callback):
             from rich.console import Group
 
             if not self.progress:
-                return Panel("Progress display not initialized", title="Training Progress", border_style="red")
+                return Panel(
+                    "Progress display not initialized",
+                    title="Training Progress",
+                    border_style="red",
+                )
 
             layout_elements = [self.progress]
 
@@ -206,18 +219,26 @@ class RichProgressCallback(pl.Callback):
                 metrics_table.add_column("Value", style="white", justify="right")
 
                 key_metrics = [
-                    'train_loss', 'train_iou', 'train_precision', 'train_recall', 'train_f1',
-                    'val_loss', 'val_iou', 'val_precision', 'val_recall', 'val_f1',
+                    "train_loss",
+                    "train_iou",
+                    "train_precision",
+                    "train_recall",
+                    "train_f1",
+                    "val_loss",
+                    "val_iou",
+                    "val_precision",
+                    "val_recall",
+                    "val_f1",
                 ]
 
                 for key in key_metrics:
                     if key in self.train_metrics and self.train_metrics[key] is not None:
-                        display_name = key.replace('_', ' ').title()
+                        display_name = key.replace("_", " ").title()
                         metrics_table.add_row(display_name, f"{self.train_metrics[key]:.4f}")
 
                 for key in key_metrics:
                     if key in self.val_metrics and self.val_metrics[key] is not None:
-                        display_name = key.replace('_', ' ').title()
+                        display_name = key.replace("_", " ").title()
                         metrics_table.add_row(display_name, f"{self.val_metrics[key]:.4f}")
 
                 layout_elements.append(metrics_table)

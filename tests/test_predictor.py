@@ -2,10 +2,7 @@
 
 from __future__ import annotations
 
-from pathlib import Path
-
 import pytest
-
 
 np = pytest.importorskip("numpy")
 torch = pytest.importorskip("torch")
@@ -40,7 +37,9 @@ def test_predict_axis_returns_channel_aware_multiclass_accumulators() -> None:
 
     output, counts = predictor._predict_axis(volume, Axis.XY, rotation_angle=0)
 
-    expected_probs = np.array(torch.softmax(torch.tensor([0.0, 1.0, 2.0]), dim=0).tolist(), dtype=np.float32)
+    expected_probs = np.array(
+        torch.softmax(torch.tensor([0.0, 1.0, 2.0]), dim=0).tolist(), dtype=np.float32
+    )
 
     assert output.shape == (2, 3, 3, 4)
     assert counts.shape == output.shape

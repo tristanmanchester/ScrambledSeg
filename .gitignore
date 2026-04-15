@@ -106,6 +106,5 @@ slice_generator.py
 
 # Testing
 .pytest_cache/
-
-# Pixi
-.pixi/
+.coverage*
+.ruff_cache/

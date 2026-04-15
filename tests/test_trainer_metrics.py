@@ -6,7 +6,6 @@ from pathlib import Path
 
 import pytest
 
-
 torch = pytest.importorskip("torch")
 
 from scrambledSeg.training.trainer import SegformerTrainer
@@ -86,10 +85,18 @@ def _build_metric_collection(prefix: float) -> torch.nn.ModuleDict:
             "f1": FakeMetric(prefix + 0.4),
             "dice": FakeMetric(prefix + 0.5),
             "specificity": FakeMetric(prefix + 0.6),
-            "iou_per_class": FakeMetric([prefix + 0.7, prefix + 0.8], compute_value=[prefix + 1.7, prefix + 1.8]),
-            "precision_per_class": FakeMetric([prefix + 0.9, prefix + 1.0], compute_value=[prefix + 1.9, prefix + 2.0]),
-            "recall_per_class": FakeMetric([prefix + 1.1, prefix + 1.2], compute_value=[prefix + 2.1, prefix + 2.2]),
-            "f1_per_class": FakeMetric([prefix + 1.3, prefix + 1.4], compute_value=[prefix + 2.3, prefix + 2.4]),
+            "iou_per_class": FakeMetric(
+                [prefix + 0.7, prefix + 0.8], compute_value=[prefix + 1.7, prefix + 1.8]
+            ),
+            "precision_per_class": FakeMetric(
+                [prefix + 0.9, prefix + 1.0], compute_value=[prefix + 1.9, prefix + 2.0]
+            ),
+            "recall_per_class": FakeMetric(
+                [prefix + 1.1, prefix + 1.2], compute_value=[prefix + 2.1, prefix + 2.2]
+            ),
+            "f1_per_class": FakeMetric(
+                [prefix + 1.3, prefix + 1.4], compute_value=[prefix + 2.3, prefix + 2.4]
+            ),
         }
     )
 
@@ -144,7 +151,9 @@ def test_trainer_uses_separate_metric_state_for_train_and_validation(tmp_path: P
     assert trainer.val_confusion_matrix.updates == 1
 
 
-def test_trainer_resets_phase_metrics_and_reports_validation_confusion_matrix(tmp_path: Path) -> None:
+def test_trainer_resets_phase_metrics_and_reports_validation_confusion_matrix(
+    tmp_path: Path,
+) -> None:
     """Epoch hooks should reset phase-local metrics and log validation-only results."""
 
     trainer = _build_trainer(tmp_path)
@@ -153,7 +162,9 @@ def test_trainer_resets_phase_metrics_and_reports_validation_confusion_matrix(tm
     trainer.val_confusion_matrix = FakeConfusionMatrix([[3, 1], [0, 4]])
 
     logged: dict[str, torch.Tensor] = {}
-    trainer.log = lambda name, value, **kwargs: logged.__setitem__(name, value.detach().clone() if isinstance(value, torch.Tensor) else torch.tensor(value))
+    trainer.log = lambda name, value, **kwargs: logged.__setitem__(
+        name, value.detach().clone() if isinstance(value, torch.Tensor) else torch.tensor(value)
+    )
     trainer.log_dict = lambda *args, **kwargs: None
 
     captured: dict[str, torch.Tensor] = {}
@@ -172,9 +183,15 @@ def test_trainer_resets_phase_metrics_and_reports_validation_confusion_matrix(tm
     trainer.on_validation_epoch_end()
 
     assert logged["val_loss"].item() == pytest.approx(1.5)
-    assert logged["val_iou"].item() == pytest.approx(trainer.val_metrics["iou"].compute_value.item())
-    assert logged["val_precision"].item() == pytest.approx(trainer.val_metrics["precision"].compute_value.item())
-    assert logged["val_iou_class_0"].item() == pytest.approx(trainer.val_metrics["iou_per_class"].compute_value[0].item())
+    assert logged["val_iou"].item() == pytest.approx(
+        trainer.val_metrics["iou"].compute_value.item()
+    )
+    assert logged["val_precision"].item() == pytest.approx(
+        trainer.val_metrics["precision"].compute_value.item()
+    )
+    assert logged["val_iou_class_0"].item() == pytest.approx(
+        trainer.val_metrics["iou_per_class"].compute_value[0].item()
+    )
     assert torch.equal(captured["analysis"], trainer.val_confusion_matrix.matrix)
     assert torch.equal(captured["saved"], trainer.val_confusion_matrix.matrix)
     assert trainer.val_confusion_matrix.reset_calls == 2
