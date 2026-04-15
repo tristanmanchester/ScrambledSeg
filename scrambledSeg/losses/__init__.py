@@ -20,6 +20,25 @@ def _register_loss(name: str, factory: Callable[..., nn.Module]) -> None:
     normalized = name.lower()
     _LOSS_BUILDERS[normalized] = factory
 
+
+def _prepare_one_hot_targets(
+    targets: torch.Tensor,
+    num_classes: int,
+    ignore_index: Optional[int],
+) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    """Return safe class indices, a valid-pixel mask, and masked one-hot targets."""
+
+    if ignore_index is None:
+        valid_mask = torch.ones_like(targets, dtype=torch.bool)
+    else:
+        valid_mask = targets != ignore_index
+
+    safe_targets = torch.where(valid_mask, targets, torch.zeros_like(targets))
+    safe_targets = safe_targets.clamp(0, num_classes - 1)
+    one_hot = F.one_hot(safe_targets, num_classes).permute(0, 3, 1, 2).float()
+    one_hot = one_hot * valid_mask.unsqueeze(1).to(one_hot.dtype)
+    return safe_targets, valid_mask, one_hot
+
 # Lovász loss implementation based on PyTorch version
 def lovasz_grad(gt_sorted: torch.Tensor) -> torch.Tensor:
     """
@@ -49,9 +68,14 @@ def lovasz_softmax_flat(
     classes: 'all' for all, 'present' for classes present in labels, or a list of classes to average.
     ignore: void class labels
     """
+    if ignore is not None:
+        valid = labels != ignore
+        probas = probas[valid]
+        labels = labels[valid]
+
     if probas.numel() == 0:
         # only void pixels, the gradients should be 0
-        return probas * 0.
+        return probas.sum() * 0.
     C = probas.size(1)
     losses = []
     class_to_sum = list(range(C)) if classes in ['all', 'present'] else classes
@@ -70,6 +94,8 @@ def lovasz_softmax_flat(
         perm = perm.data
         fg_sorted = fg[perm]
         losses.append(torch.dot(errors_sorted, lovasz_grad(fg_sorted)))
+    if not losses:
+        return probas.sum() * 0.
     return torch.stack(losses).mean()
 
 
@@ -237,14 +263,17 @@ class FocalLoss(nn.Module):
         # Apply softmax to get class probabilities
         inputs_softmax = F.softmax(inputs, dim=1)
         
-        # Create one-hot encoding of targets
-        targets_one_hot = F.one_hot(targets, num_classes).permute(0, 3, 1, 2).float()
+        safe_targets, valid_mask, targets_one_hot = _prepare_one_hot_targets(
+            targets,
+            num_classes,
+            self.ignore_index,
+        )
         
         # Get probabilities for the target classes
         pt = (inputs_softmax * targets_one_hot).sum(dim=1)
         
         # Cast ignore index to a mask
-        mask = (targets != self.ignore_index).float()
+        mask = valid_mask.float()
         
         # Calculate focal weight
         focal_weight = (1 - pt) ** self.gamma
@@ -253,9 +282,9 @@ class FocalLoss(nn.Module):
         if isinstance(self.alpha, (list, tuple, np.ndarray)):
             # Alpha is a list for each class
             assert len(self.alpha) == num_classes, "Alpha should have same length as num_classes"
-            alpha_t = torch.tensor(self.alpha, device=inputs.device)
+            alpha_t = torch.tensor(self.alpha, device=inputs.device, dtype=inputs.dtype)
             # Apply alpha for each class in the target
-            alpha_t = alpha_t.gather(0, targets.clamp(0))  # Clamp to handle -100
+            alpha_t = alpha_t.gather(0, safe_targets)
         else:
             # Alpha is a single value - convert to tensor
             alpha_t = torch.ones_like(pt) * self.alpha
@@ -329,11 +358,14 @@ class TverskyLoss(nn.Module):
         # Apply softmax to get class probabilities
         inputs_softmax = F.softmax(inputs, dim=1)
         
-        # Create one-hot encoding of targets
-        targets_one_hot = F.one_hot(targets, num_classes).permute(0, 3, 1, 2).float()
+        _, valid_mask, targets_one_hot = _prepare_one_hot_targets(
+            targets,
+            num_classes,
+            self.ignore_index,
+        )
         
         # Cast ignore index to a mask (1 for valid pixels, 0 for ignored)
-        mask = (targets != self.ignore_index).float().unsqueeze(1).expand_as(inputs_softmax)
+        mask = valid_mask.float().unsqueeze(1).expand_as(inputs_softmax)
         
         # Calculate Tversky index for each class
         losses = []
@@ -466,7 +498,12 @@ class CrossEntropyDiceLoss(nn.Module):
         self.ignore_index = ignore_index
         self.ce_criterion = nn.CrossEntropyLoss(ignore_index=ignore_index)
     
-    def multi_class_dice_loss(self, pred: torch.Tensor, target: torch.Tensor) -> torch.Tensor:
+    def multi_class_dice_loss(
+        self,
+        pred: torch.Tensor,
+        target: torch.Tensor,
+        valid_mask: Optional[torch.Tensor] = None,
+    ) -> torch.Tensor:
         """Calculate multi-class Dice loss component.
         
         Args:
@@ -476,6 +513,11 @@ class CrossEntropyDiceLoss(nn.Module):
         Returns:
             Average Dice loss across all classes
         """
+        if valid_mask is not None:
+            valid_mask = valid_mask.unsqueeze(1).to(pred.dtype)
+            pred = pred * valid_mask
+            target = target * valid_mask
+
         # Calculate Dice coefficient for each class
         dims = (0, 2, 3)  # Sum over batch, height, width
         intersection = (pred * target).sum(dims)
@@ -515,12 +557,15 @@ class CrossEntropyDiceLoss(nn.Module):
         # For Dice loss, we need softmax probabilities and one-hot encoded target
         pred_softmax = F.softmax(pred, dim=1)
         
-        # Convert target to one-hot encoded format
         num_classes = pred.size(1)
-        target_one_hot = F.one_hot(target, num_classes).permute(0, 3, 1, 2).float()
+        _, valid_mask, target_one_hot = _prepare_one_hot_targets(
+            target,
+            num_classes,
+            self.ignore_index,
+        )
 
         # Calculate Dice loss
-        dice_loss = self.multi_class_dice_loss(pred_softmax, target_one_hot)
+        dice_loss = self.multi_class_dice_loss(pred_softmax, target_one_hot, valid_mask=valid_mask)
 
         # Combine losses
         return self.ce_weight * ce_loss + self.dice_weight * dice_loss
