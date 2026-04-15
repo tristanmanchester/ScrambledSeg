@@ -9,9 +9,9 @@ logger = logging.getLogger(__name__)
 
 class Axis(Enum):
     """Enumeration of possible prediction axes."""
-    XY = auto()  # Frontal plane (k axis)
-    YZ = auto()  # Sagittal plane (i axis)
-    XZ = auto()  # Transverse plane (j axis)
+    XY = auto()  # Slice along depth, plane is (H, W)
+    YZ = auto()  # Slice along width, plane is (D, H)
+    XZ = auto()  # Slice along height, plane is (D, W)
 
 class AxisPredictor:
     """Handles 3D volume slicing and reconstruction for multi-axis prediction."""
@@ -21,15 +21,8 @@ class AxisPredictor:
         # Define axis permutations for each view
         self._axis_permutations = {
             Axis.XY: (0, 1, 2),  # No permutation needed
-            Axis.YZ: (1, 2, 0),  # Move X to end
-            Axis.XZ: (0, 2, 1),  # Move Y to end
-        }
-        
-        # Define inverse permutations to restore original orientation
-        self._inverse_permutations = {
-            Axis.XY: (0, 1, 2),
-            Axis.YZ: (2, 0, 1),
-            Axis.XZ: (0, 2, 1),
+            Axis.YZ: (2, 0, 1),  # Slice along width
+            Axis.XZ: (1, 0, 2),  # Slice along height
         }
 
     def _get_view_permutation(self, axis: Axis, ndim: int) -> Tuple[int, ...]:
