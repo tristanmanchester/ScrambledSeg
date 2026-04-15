@@ -36,6 +36,7 @@ class SynchrotronDataset(Dataset):
         self.normalize = normalize
         self.maxworkers = maxworkers
         self.cache_size = cache_size
+        self._cache = {}
         self._invalid_indices = set()
         
         # Add this default initialization
@@ -46,6 +47,9 @@ class SynchrotronDataset(Dataset):
             self._setup_data_directories()
             if subset_fraction < 1.0:
                 self._apply_subset_selection(subset_fraction, random_seed)
+            self._initialize_dataset_metadata()
+            if self.cache_size > 0:
+                self._preload_cache()
         except Exception as e:
             raise DatasetError(f"Failed to initialize dataset: {str(e)}")
 
@@ -77,7 +81,18 @@ class SynchrotronDataset(Dataset):
         self.label_files = label_files
         self.n_samples = len(data_files)
         logger.info(f"Initialized {self.split} dataset with {self.n_samples} samples")
-        
+
+    def _initialize_dataset_metadata(self):
+        """Load representative metadata for the currently selected files."""
+        if self.n_samples == 0:
+            raise DatasetError("Dataset is empty after subset selection")
+
+        # Reset metadata so it reflects the currently selected files
+        self.data_shape = None
+        self.label_shape = None
+        if hasattr(self, "multi_class"):
+            delattr(self, "multi_class")
+
         # Load sample and set shapes first
         sample = self._load_from_file(0)
         self.data_shape = sample['image'].shape
@@ -120,10 +135,6 @@ class SynchrotronDataset(Dataset):
         # Log dataset information
         logger.info(f"Data shape: {self.data_shape}")
         logger.info(f"Label shape: {self.label_shape}")
-        
-        # Preload into cache if requested
-        if self.cache_size > 0:
-            self._preload_cache()
 
     def _preload_cache(self):
         """Preload samples into cache."""
@@ -190,10 +201,13 @@ class SynchrotronDataset(Dataset):
         if random_seed is not None:
             np.random.seed(random_seed)
         num_samples = int(self.n_samples * subset_fraction)
+        if num_samples <= 0:
+            raise DatasetError("Subset selection resulted in an empty dataset")
         indices = np.random.choice(self.n_samples, num_samples, replace=False)
         self.data_files = [self.data_files[i] for i in indices]
         self.label_files = [self.label_files[i] for i in indices]
         self.n_samples = num_samples
+        self._cache.clear()
         logger.info(f"Using {self.n_samples} samples ({subset_fraction*100:.1f}% of data)")
 
     def _get_real_index(self, idx: int) -> int:
@@ -275,6 +289,7 @@ class SynchrotronDataset(Dataset):
 
     def __getitem__(self, idx: int) -> Dict[str, torch.Tensor]:
         """Get a single item from the dataset"""
+        real_idx = None
         try:
             real_idx = self._get_real_index(idx)
             
@@ -313,7 +328,8 @@ class SynchrotronDataset(Dataset):
             }
         except Exception as e:
             logger.error(f"Error in __getitem__ for index {idx}: {str(e)}")
-            self._invalid_indices.add(real_idx)
+            if real_idx is not None:
+                self._invalid_indices.add(real_idx)
             # Return a new index if possible
             if len(self._invalid_indices) < self.n_samples - 1:
                 return self.__getitem__((idx + 1) % self.n_samples)
