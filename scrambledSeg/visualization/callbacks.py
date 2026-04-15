@@ -2,6 +2,7 @@
 import os
 from pathlib import Path
 import logging
+import re
 import numpy as np
 import torch
 import pytorch_lightning as pl
@@ -15,6 +16,9 @@ logger = logging.getLogger(__name__)
 
 class VisualizationCallback(pl.Callback):
     """Callback for visualizing segmentation results."""
+
+    SCALAR_METRICS = ("loss", "iou", "precision", "recall", "f1", "dice", "specificity")
+    PER_CLASS_METRICS = ("iou", "precision", "recall", "f1")
 
     def __init__(
         self,
@@ -59,94 +63,167 @@ class VisualizationCallback(pl.Callback):
         # Store validation batch for visualization
         self.val_batch = None
 
-    def _update_metrics_csv(self, metrics: Dict[str, float], epoch: int) -> None:
+    def _build_metrics_columns(self) -> List[str]:
+        """Return the default CSV columns for tracked metrics."""
+        columns = [
+            'step', 'epoch',
+            'train_loss', 'val_loss',
+            'train_iou', 'val_iou',
+            'train_precision', 'val_precision',
+            'train_recall', 'val_recall',
+            'train_f1', 'val_f1',
+            'train_dice', 'val_dice',
+            'train_specificity', 'val_specificity'
+        ]
+
+        for metric in self.PER_CLASS_METRICS:
+            for class_idx in range(self.num_classes):
+                columns.extend([f'train_{metric}_class_{class_idx}', f'val_{metric}_class_{class_idx}'])
+
+        return columns
+
+    def _is_global_zero(self, trainer: pl.Trainer) -> bool:
+        """Return whether the current process should write side effects."""
+        return bool(getattr(trainer, "is_global_zero", True))
+
+    @staticmethod
+    def _to_float(value: Any) -> float:
+        """Convert supported numeric-like values to floats without raising."""
+        if value is None:
+            return float('nan')
+        if isinstance(value, torch.Tensor):
+            if value.numel() == 1:
+                return float(value.detach().cpu().item())
+            return float('nan')
+        if isinstance(value, np.generic):
+            return float(value.item())
+        if isinstance(value, np.ndarray):
+            if value.size == 1:
+                return float(value.item())
+            return float('nan')
+        if isinstance(value, (int, float)):
+            return float(value)
+        if isinstance(value, str):
+            text = value.strip()
+            if not text:
+                return float('nan')
+            tensor_match = re.search(
+                r"tensor\(\s*([-+]?(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][-+]?\d+)?|nan|inf|-inf)",
+                text,
+            )
+            if tensor_match:
+                try:
+                    return float(tensor_match.group(1))
+                except ValueError:
+                    return float('nan')
+            try:
+                return float(text)
+            except ValueError:
+                return float('nan')
+        try:
+            return float(value)
+        except (TypeError, ValueError):
+            return float('nan')
+
+    def _flatten_metrics(self, metrics: Dict[str, Any], split: Optional[str] = None) -> Dict[str, Any]:
+        """Normalize callback metrics into flat CSV column/value pairs."""
+        flattened: Dict[str, Any] = {}
+
+        if split == 'train' and 'loss' in metrics:
+            flattened['train_loss'] = metrics['loss']
+
+        prefixes = [split] if split in {'train', 'val'} else ['train', 'val']
+        scalar_names = set(self.SCALAR_METRICS)
+        per_class_names = set(self.PER_CLASS_METRICS)
+        per_class_pattern = re.compile(r"^(train|val)_(iou|precision|recall|f1)_class_(\d+)$")
+
+        for key, value in metrics.items():
+            if not isinstance(key, str):
+                continue
+            match = per_class_pattern.fullmatch(key)
+            if match and match.group(1) in prefixes:
+                flattened[key] = value
+                continue
+
+            for prefix in prefixes:
+                if key == f'{prefix}_loss':
+                    flattened[key] = value
+                    break
+                if not key.startswith(f'{prefix}_'):
+                    continue
+                metric_name = key[len(prefix) + 1:]
+                if metric_name in scalar_names:
+                    flattened[key] = value
+                    break
+
+        if split in {'train', 'val'} and isinstance(metrics.get('per_class_metrics'), dict):
+            for metric_name, metric_values in metrics['per_class_metrics'].items():
+                if metric_name not in per_class_names or metric_values is None:
+                    continue
+
+                if isinstance(metric_values, torch.Tensor):
+                    values = metric_values.detach().cpu().reshape(-1).tolist()
+                elif isinstance(metric_values, np.ndarray):
+                    values = metric_values.reshape(-1).tolist()
+                elif isinstance(metric_values, (list, tuple)):
+                    values = list(metric_values)
+                else:
+                    values = [metric_values]
+
+                for class_idx, class_value in enumerate(values):
+                    flattened[f'{split}_{metric_name}_class_{class_idx}'] = class_value
+
+        return flattened
+
+    def _collect_callback_metrics(self, callback_metrics: Dict[str, Any], prefix: str) -> Dict[str, Any]:
+        """Collect tracked metrics from trainer callback metrics."""
+        collected: Dict[str, Any] = {}
+        allowed_scalars = {f'{prefix}_{metric}' for metric in self.SCALAR_METRICS}
+        per_class_pattern = re.compile(rf"^{prefix}_(?:{'|'.join(self.PER_CLASS_METRICS)})_class_\d+$")
+
+        for key, value in callback_metrics.items():
+            if not isinstance(key, str):
+                continue
+            if key in allowed_scalars or per_class_pattern.fullmatch(key):
+                collected[key] = value
+
+        return collected
+
+    def _update_metrics_csv(self, metrics: Dict[str, Any], epoch: int, split: Optional[str] = None) -> None:
         """Update metrics CSV file with new values."""
         try:
             # Create metrics file if it doesn't exist with comprehensive columns
             if not os.path.exists(self.metrics_file):
-                columns = [
-                    'step', 'epoch', 
-                    'train_loss', 'val_loss',
-                    'train_iou', 'val_iou',
-                    'train_precision', 'val_precision',
-                    'train_recall', 'val_recall', 
-                    'train_f1', 'val_f1',
-                    'train_dice', 'val_dice',
-                    'train_specificity', 'val_specificity'
-                ]
-                
-                # Add per-class metrics dynamically based on num_classes
-                for metric in ['iou', 'precision', 'recall', 'f1']:
-                    for class_idx in range(self.num_classes):
-                        columns.extend([f'train_{metric}_class_{class_idx}', f'val_{metric}_class_{class_idx}'])
-                df = pd.DataFrame(columns=columns)
+                df = pd.DataFrame(columns=self._build_metrics_columns())
                 df.to_csv(self.metrics_file, index=False)
             
             # Read existing metrics
             df = pd.read_csv(self.metrics_file)
-            
-            # Helper function to convert tensor to float
-            def to_float(value):
-                if value is None:
-                    return float('nan')
-                if isinstance(value, torch.Tensor):
-                    return value.detach().cpu().item()
-                if isinstance(value, str) and 'tensor' in value:
-                    return float(value.split('tensor(')[1].split(',')[0])
-                try:
-                    return float(value)
-                except (TypeError, ValueError):
-                    return float('nan')
+
+            flattened_metrics = self._flatten_metrics(metrics, split=split)
 
             # Create new row, preserving existing values if not in current metrics
             new_row = {
                 'step': len(df),
                 'epoch': epoch
             }
-            
-            # Map common metric keys
-            metric_mapping = {
-                'loss': 'train_loss',
-                'train_iou': 'train_iou',
-                'val_loss': 'val_loss',
-                'val_iou': 'val_iou'
-            }
-            
-            # Update metrics that are present
-            for metric_key, csv_column in metric_mapping.items():
-                if metric_key in metrics:
-                    new_row[csv_column] = to_float(metrics[metric_key])
-            
-            # Handle additional comprehensive metrics
-            comprehensive_metrics = [
-                'train_precision', 'val_precision',
-                'train_recall', 'val_recall',
-                'train_f1', 'val_f1', 
-                'train_dice', 'val_dice',
-                'train_specificity', 'val_specificity'
-            ]
-            
-            for metric_name in comprehensive_metrics:
-                if metric_name in metrics:
-                    new_row[metric_name] = to_float(metrics[metric_name])
-                    
-            # Handle per-class metrics
-            class_names = ['class_0', 'class_1', 'class_2', 'class_3']
-            metric_types = ['iou', 'precision', 'recall', 'f1']
-            
-            for split in ['train', 'val']:
-                for metric_type in metric_types:
-                    for class_name in class_names:
-                        metric_key = f'{split}_{metric_type}_{class_name}'
-                        if metric_key in metrics:
-                            new_row[metric_key] = to_float(metrics[metric_key])
+
+            for metric_key, metric_value in flattened_metrics.items():
+                new_row[metric_key] = self._to_float(metric_value)
             
             # Append new row using a temporary DataFrame (handle empty values)
             new_row_df = pd.DataFrame([new_row])
             
             # Only concatenate if we have actual data
-            if not new_row_df.empty and not new_row_df.isna().all().all():
-                new_df = pd.concat([df, new_row_df], ignore_index=True)
+            if len(new_row) > 2 and not new_row_df.drop(columns=['step', 'epoch'], errors='ignore').isna().all().all():
+                all_columns = list(dict.fromkeys([*df.columns, *new_row_df.columns]))
+                if df.empty:
+                    new_df = new_row_df.reindex(columns=all_columns)
+                else:
+                    new_df = pd.concat(
+                        [df.reindex(columns=all_columns), new_row_df.reindex(columns=all_columns)],
+                        ignore_index=True,
+                    )
                 new_df.to_csv(self.metrics_file, index=False)
             else:
                 logger.debug("Skipping empty metrics row")
@@ -185,10 +262,13 @@ class VisualizationCallback(pl.Callback):
     def on_train_batch_end(self, trainer: pl.Trainer, pl_module: pl.LightningModule, 
                           outputs: Dict[str, torch.Tensor], batch: Any, batch_idx: int) -> None:
         """Log training metrics after each batch."""
+        if not self._is_global_zero(trainer):
+            return
+
         if isinstance(outputs, dict) and 'loss' in outputs:
             try:
                 # Update metrics CSV
-                self._update_metrics_csv(outputs, trainer.current_epoch)
+                self._update_metrics_csv(outputs, trainer.current_epoch, split='train')
                 
                 # Update plot every 10 steps
                 if trainer.global_step % 10 == 0:
@@ -213,15 +293,16 @@ class VisualizationCallback(pl.Callback):
 
     def on_validation_epoch_end(self, trainer: pl.Trainer, pl_module: pl.LightningModule) -> None:
         """Handle end of validation epoch including visualizations."""
+        if not self._is_global_zero(trainer):
+            self.val_batch = None
+            return
+
         try:
             # Get the validation metrics
-            val_metrics = {
-                'val_loss': trainer.callback_metrics.get('val_loss'),
-                'val_iou': trainer.callback_metrics.get('val_iou')
-            }
+            val_metrics = self._collect_callback_metrics(trainer.callback_metrics, prefix='val')
             
             # Update metrics CSV with validation results
-            self._update_metrics_csv({**val_metrics}, trainer.current_epoch)
+            self._update_metrics_csv(val_metrics, trainer.current_epoch, split='val')
             
             # Plot updated metrics - generate multiple plot types
             self._safe_plot_metrics(
@@ -309,6 +390,9 @@ class VisualizationCallback(pl.Callback):
 
     def on_train_epoch_start(self, trainer: pl.Trainer, pl_module: pl.LightningModule) -> None:
         """Create visualization at the beginning of each training epoch."""
+        if not self._is_global_zero(trainer):
+            return
+
         try:
             # Get first batch from train dataloader
             train_loader = trainer.train_dataloader

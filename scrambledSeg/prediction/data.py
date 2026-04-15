@@ -104,18 +104,18 @@ class TomoDataset:
         Returns:
             Normalized tensor of shape (1, 1, H, W)
         """
-        # Convert to float32
         slice_data = slice_data.astype(np.float32)
-        
-        # If uint16 input or large values, normalize to [0,1] first
-        if slice_data.max() > 255:
-            slice_data = (slice_data - slice_data.min()) / (slice_data.max() - slice_data.min())
-        
-        # Divide by 255 as in training (this is required for the model to work correctly)
-        slice_data = slice_data / 255.0
-        
-        # Add batch and channel dimensions
-        slice_tensor = torch.from_numpy(slice_data).unsqueeze(0).unsqueeze(0)
+
+        if self.normalize_range is None:
+            min_value = float(slice_data.min())
+            max_value = float(slice_data.max())
+        else:
+            min_value, max_value = self.normalize_range
+
+        scale = max(max_value - min_value, 1e-6)
+        slice_data = np.clip((slice_data - min_value) / scale, 0.0, 1.0)
+
+        slice_tensor = torch.tensor(slice_data.tolist(), dtype=torch.float32).unsqueeze(0).unsqueeze(0)
         return slice_tensor
     
     def denormalize_prediction(self, pred: torch.Tensor) -> np.ndarray:
