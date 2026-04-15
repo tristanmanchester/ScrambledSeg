@@ -5,8 +5,7 @@ import torch.nn.functional as F
 import transformers
 import logging
 from dataclasses import dataclass
-from typing import List, Dict
-import os
+from typing import List
 
 logger = logging.getLogger(__name__)
 

@@ -3,15 +3,17 @@ import h5py
 import numpy as np
 import torch
 from pathlib import Path
-from typing import Union, Tuple, Optional
+from typing import Optional
 import logging
+
+from .types import NormalizationRange, PathLike
 
 logger = logging.getLogger(__name__)
 
 class TomoDataset:
     """Handles loading, saving, and preprocessing of tomographic data."""
     
-    def __init__(self, normalize_range: Optional[Tuple[float, float]] = None):
+    def __init__(self, normalize_range: Optional[NormalizationRange] = None):
         """Initialize dataset handler.
         
         Args:
@@ -20,7 +22,7 @@ class TomoDataset:
         """
         self.normalize_range = normalize_range
         
-    def load_h5(self, path: Union[str, Path], dataset_path: str = "/data") -> np.ndarray:
+    def load_h5(self, path: PathLike, dataset_path: str = "/data") -> np.ndarray:
         """Load uint16 data from h5 file.
         
         Args:
@@ -44,7 +46,7 @@ class TomoDataset:
         logger.info(f"Value range: [{data.min()}, {data.max()}]")
         return data
     
-    def save_h5(self, data: np.ndarray, path: Union[str, Path], dataset_path: str = "/data"):
+    def save_h5(self, data: np.ndarray, path: PathLike, dataset_path: str = "/data") -> None:
         """Save predictions to h5 file, handling both binary and multi-class data.
         
         Args:
@@ -143,7 +145,7 @@ class TomoDataset:
             
             return pred_binary
     
-    def get_slice_stats(self, slice_data: np.ndarray) -> dict:
+    def get_slice_stats(self, slice_data: np.ndarray) -> dict[str, float]:
         """Get statistics for a slice.
         
         Args:

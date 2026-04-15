@@ -2,15 +2,11 @@
 
 from __future__ import annotations
 
-import sys
 from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
 
-PROJECT_ROOT = Path(__file__).resolve().parents[1]
-if str(PROJECT_ROOT) not in sys.path:
-    sys.path.insert(0, str(PROJECT_ROOT))
 
 np = pytest.importorskip("numpy")
 pd = pytest.importorskip("pandas")
@@ -24,6 +20,8 @@ class StubVisualizer:
 
     def __init__(self) -> None:
         self.metrics_file = None
+        self.interesting_indices = []
+        self.visualizations = []
 
     def plot_metrics(self, window_size: int, save_path: str) -> None:
         return None
@@ -35,17 +33,28 @@ class StubVisualizer:
         return None
 
     def find_interesting_slices(self, masks, num_samples: int):
-        return []
+        return self.interesting_indices
 
     def visualize_prediction(self, image, mask, prediction, save_path: str, class_values=None) -> None:
+        self.visualizations.append(
+            {
+                "save_path": save_path,
+                "class_values": class_values,
+                "prediction_shape": tuple(prediction.shape),
+            }
+        )
         return None
 
 
-def _build_callback(tmp_path: Path, num_classes: int = 3) -> VisualizationCallback:
+def _build_callback(
+    tmp_path: Path,
+    num_classes: int = 3,
+    visualizer: StubVisualizer | None = None,
+) -> VisualizationCallback:
     return VisualizationCallback(
         output_dir=str(tmp_path / "visualizations"),
         metrics_dir=str(tmp_path / "logs"),
-        visualizer=StubVisualizer(),
+        visualizer=visualizer or StubVisualizer(),
         num_classes=num_classes,
     )
 
@@ -160,3 +169,40 @@ def test_callback_skips_side_effects_for_non_global_zero(tmp_path: Path) -> None
     )
 
     assert not callback.metrics_file.exists()
+
+
+def test_callback_uses_dataset_class_values_for_validation_visualizations(tmp_path: Path) -> None:
+    """Validation visualizations should reuse dataset class labels when available."""
+
+    visualizer = StubVisualizer()
+    visualizer.interesting_indices = [0]
+    callback = _build_callback(tmp_path, num_classes=3, visualizer=visualizer)
+    callback.val_batch = {
+        "image": torch.zeros((1, 1, 2, 2), dtype=torch.float32),
+        "mask": torch.zeros((1, 1, 2, 2), dtype=torch.int64),
+    }
+
+    class _DummyModule:
+        device = "cpu"
+
+        def __call__(self, image: torch.Tensor) -> torch.Tensor:
+            _, _, height, width = image.shape
+            return torch.zeros((1, 3, height, width), dtype=torch.float32)
+
+    trainer = SimpleNamespace(
+        current_epoch=3,
+        global_step=1,
+        is_global_zero=True,
+        callback_metrics={"val_loss": torch.tensor(0.5)},
+        val_dataloaders=SimpleNamespace(dataset=SimpleNamespace(class_values=np.array([0, 2, 4]))),
+    )
+
+    callback.on_validation_epoch_end(
+        trainer=trainer,
+        pl_module=_DummyModule(),
+    )
+
+    assert len(visualizer.visualizations) == 1
+    assert np.array_equal(visualizer.visualizations[0]["class_values"], np.array([0, 2, 4]))
+    assert visualizer.visualizations[0]["save_path"].endswith("val_epoch_3_sample_0.png")
+    assert callback.val_batch is None

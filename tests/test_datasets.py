@@ -2,19 +2,15 @@
 
 from __future__ import annotations
 
-import sys
 from pathlib import Path
 
 import pytest
 
-PROJECT_ROOT = Path(__file__).resolve().parents[1]
-if str(PROJECT_ROOT) not in sys.path:
-    sys.path.insert(0, str(PROJECT_ROOT))
 
 np = pytest.importorskip("numpy")
 tifffile = pytest.importorskip("tifffile")
 
-from scrambledSeg.data.datasets import SynchrotronDataset
+from scrambledSeg.data.datasets import DatasetError, SynchrotronDataset
 
 
 def _write_dataset(root: Path, n_samples: int = 5) -> Path:
@@ -108,3 +104,24 @@ def test_synchrotron_dataset_subset_without_cache_matches_selected_files(
         expected_mask = tifffile.imread(dataset.label_files[idx])[None, ...]
         assert np.array_equal(sample["image"], expected_image)
         assert np.array_equal(sample["mask"], expected_mask)
+
+
+def test_synchrotron_dataset_getitem_raises_instead_of_skipping_bad_samples(
+    tmp_path: Path,
+) -> None:
+    """A broken sample should fail loudly rather than transparently returning a different sample."""
+
+    dataset_root = _write_dataset(tmp_path, n_samples=3)
+    dataset = SynchrotronDataset(dataset_root, split="train", cache_size=0)
+
+    original_load = dataset._load_from_file
+
+    def _broken_load(idx: int):
+        if idx == 0:
+            raise ValueError("corrupt TIFF payload")
+        return original_load(idx)
+
+    dataset._load_from_file = _broken_load  # type: ignore[method-assign]
+
+    with pytest.raises(DatasetError, match=r"Failed to load sample 0 .*000\.tif"):
+        dataset[0]

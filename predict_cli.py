@@ -174,12 +174,28 @@ def load_model(checkpoint_path: Path, device: str) -> CustomSegformer:
         model.load_state_dict(state_dict)
     except RuntimeError:
         logger.info("Falling back to loading state dict without 'model.' prefix")
-        cleaned_state_dict = {k.replace("model.", ""): v for k, v in state_dict.items()}
+        cleaned_state_dict = {
+            k.replace("model.", "", 1) if k.startswith("model.") else k: v
+            for k, v in state_dict.items()
+        }
         try:
             model.load_state_dict(cleaned_state_dict)
-        except RuntimeError:
-            logger.warning("Loading with strict=False due to mismatched keys.")
-            model.load_state_dict(cleaned_state_dict, strict=False)
+        except RuntimeError as exc:
+            expected_keys = set(model.state_dict().keys())
+            provided_keys = set(cleaned_state_dict.keys())
+            missing_keys = sorted(expected_keys - provided_keys)
+            unexpected_keys = sorted(provided_keys - expected_keys)
+
+            def _preview(keys: list[str]) -> str:
+                preview = keys[:5]
+                suffix = "..." if len(keys) > 5 else ""
+                return f"{preview}{suffix}"
+
+            raise RuntimeError(
+                "Checkpoint state_dict does not match the model after removing an optional "
+                f"'model.' prefix. Missing keys: {_preview(missing_keys)}; "
+                f"unexpected keys: {_preview(unexpected_keys)}."
+            ) from exc
 
     return model
 

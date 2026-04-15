@@ -1,12 +1,40 @@
 """Transforms for data augmentation."""
 
 import logging
-from typing import Dict
+from typing import TypedDict
 
 import albumentations as A
 import cv2
 
 logger = logging.getLogger(__name__)
+
+
+class AugmentationConfig(TypedDict, total=False):
+    """Augmentation settings supported by the training transform builder."""
+
+    rotate_prob: float
+    rotate_limit: int
+    rotate_border_mode: str
+    rotate_border_value: int
+    rotate_mask_border_value: int
+    flip_prob: float
+    brightness_contrast_prob: float
+    brightness_limit: float | list[float]
+    contrast_limit: float | list[float]
+    brightness_by_max: bool
+    gamma_prob: float
+    gamma_limit: list[int]
+    blur_prob: float
+    blur_limit: list[int]
+    gaussian_noise_prob: float
+    gaussian_noise_limit: list[float]
+
+
+class TransformConfig(TypedDict, total=False):
+    """Subset of the training configuration needed to build transforms."""
+
+    augmentation: AugmentationConfig
+
 
 # Map string border modes to cv2 constants
 BORDER_MODES = {
@@ -17,7 +45,28 @@ BORDER_MODES = {
 }
 
 
-def create_train_transform(config: Dict) -> A.Compose:
+def _resolve_border_mode(name: str) -> int:
+    """Translate a configured border-mode name into the matching OpenCV constant."""
+
+    try:
+        return BORDER_MODES[name]
+    except KeyError as exc:
+        raise ValueError(
+            f"Unsupported rotate_border_mode '{name}'. Choose from {sorted(BORDER_MODES)}."
+        ) from exc
+
+
+def _create_normalize_transform() -> A.Normalize:
+    """Create the shared normalization transform used for train and validation."""
+
+    return A.Normalize(
+        mean=0,
+        std=1,
+        max_pixel_value=1.0,
+    )
+
+
+def create_train_transform(config: TransformConfig) -> A.Compose:
     """Create training augmentation pipeline based on config.
 
     Args:
@@ -40,7 +89,9 @@ def create_train_transform(config: Dict) -> A.Compose:
 
     # Rotation with border handling
     if aug_config.get("rotate_limit", 0) > 0:
-        border_mode = BORDER_MODES[aug_config.get("rotate_border_mode", "constant")]
+        border_mode = _resolve_border_mode(
+            aug_config.get("rotate_border_mode", "constant")
+        )
         transforms.append(
             A.Rotate(
                 limit=aug_config.get("rotate_limit", 360),
@@ -95,13 +146,7 @@ def create_train_transform(config: Dict) -> A.Compose:
             )
         )
 
-    transforms.append(
-        A.Normalize(
-            mean=0,
-            std=1,
-            max_pixel_value=1.0,
-        ),
-    )
+    transforms.append(_create_normalize_transform())
     logger.info(
         f"Created training transform pipeline with {len(transforms)} transforms"
     )
@@ -109,7 +154,7 @@ def create_train_transform(config: Dict) -> A.Compose:
     return A.Compose(transforms, additional_targets={"mask": "mask"})
 
 
-def create_val_transform(config: Dict) -> A.Compose:
+def create_val_transform(config: TransformConfig) -> A.Compose:
     """Create validation augmentation pipeline based on config.
 
     Args:
@@ -120,12 +165,6 @@ def create_val_transform(config: Dict) -> A.Compose:
     """
     transforms = []
     # Always ensure the output format is consistent
-    transforms.append(
-        A.Normalize(
-            mean=0,
-            std=1,
-            max_pixel_value=1.0,
-        ),
-    )
+    transforms.append(_create_normalize_transform())
     logger.info("Created validation transform pipeline with normalization only")
     return A.Compose(transforms, additional_targets={"mask": "mask"})

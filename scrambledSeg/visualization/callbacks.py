@@ -6,13 +6,22 @@ import re
 import numpy as np
 import torch
 import pytorch_lightning as pl
-from torch.utils.data import DataLoader
 import matplotlib.pyplot as plt
-from typing import Optional, Dict, Any, List
+from torch.utils.data import DataLoader
+from typing import Optional
 import pandas as pd
 from .core import SegmentationVisualizer
 
 logger = logging.getLogger(__name__)
+
+MetricScalar = torch.Tensor | np.generic | np.ndarray | int | float | str
+MetricSequence = torch.Tensor | np.ndarray | list[MetricScalar] | tuple[MetricScalar, ...]
+PerClassMetricMap = dict[str, MetricSequence | None]
+MetricValue = MetricScalar | PerClassMetricMap | None
+FlatMetricValue = MetricScalar | None
+BatchTensors = dict[str, torch.Tensor]
+ValidationDataloader = DataLoader | list[DataLoader] | None
+
 
 class VisualizationCallback(pl.Callback):
     """Callback for visualizing segmentation results."""
@@ -61,9 +70,9 @@ class VisualizationCallback(pl.Callback):
         self.visualizer.metrics_file = self.metrics_file
         
         # Store validation batch for visualization
-        self.val_batch = None
+        self.val_batch: BatchTensors | None = None
 
-    def _build_metrics_columns(self) -> List[str]:
+    def _build_metrics_columns(self) -> list[str]:
         """Return the default CSV columns for tracked metrics."""
         columns = [
             'step', 'epoch',
@@ -87,7 +96,7 @@ class VisualizationCallback(pl.Callback):
         return bool(getattr(trainer, "is_global_zero", True))
 
     @staticmethod
-    def _to_float(value: Any) -> float:
+    def _to_float(value: MetricScalar | None) -> float:
         """Convert supported numeric-like values to floats without raising."""
         if value is None:
             return float('nan')
@@ -125,9 +134,11 @@ class VisualizationCallback(pl.Callback):
         except (TypeError, ValueError):
             return float('nan')
 
-    def _flatten_metrics(self, metrics: Dict[str, Any], split: Optional[str] = None) -> Dict[str, Any]:
+    def _flatten_metrics(
+        self, metrics: dict[str, MetricValue], split: Optional[str] = None
+    ) -> dict[str, FlatMetricValue]:
         """Normalize callback metrics into flat CSV column/value pairs."""
-        flattened: Dict[str, Any] = {}
+        flattened: dict[str, FlatMetricValue] = {}
 
         if split == 'train' and 'loss' in metrics:
             flattened['train_loss'] = metrics['loss']
@@ -175,9 +186,11 @@ class VisualizationCallback(pl.Callback):
 
         return flattened
 
-    def _collect_callback_metrics(self, callback_metrics: Dict[str, Any], prefix: str) -> Dict[str, Any]:
+    def _collect_callback_metrics(
+        self, callback_metrics: dict[str, MetricValue], prefix: str
+    ) -> dict[str, MetricValue]:
         """Collect tracked metrics from trainer callback metrics."""
-        collected: Dict[str, Any] = {}
+        collected: dict[str, MetricValue] = {}
         allowed_scalars = {f'{prefix}_{metric}' for metric in self.SCALAR_METRICS}
         per_class_pattern = re.compile(rf"^{prefix}_(?:{'|'.join(self.PER_CLASS_METRICS)})_class_\d+$")
 
@@ -189,7 +202,9 @@ class VisualizationCallback(pl.Callback):
 
         return collected
 
-    def _update_metrics_csv(self, metrics: Dict[str, Any], epoch: int, split: Optional[str] = None) -> None:
+    def _update_metrics_csv(
+        self, metrics: dict[str, MetricValue], epoch: int, split: Optional[str] = None
+    ) -> None:
         """Update metrics CSV file with new values."""
         try:
             # Create metrics file if it doesn't exist with comprehensive columns
@@ -259,8 +274,73 @@ class VisualizationCallback(pl.Callback):
         except Exception as e:
             logger.error(f"Error plotting per-class metrics: {str(e)}")
 
-    def on_train_batch_end(self, trainer: pl.Trainer, pl_module: pl.LightningModule, 
-                          outputs: Dict[str, torch.Tensor], batch: Any, batch_idx: int) -> None:
+    @staticmethod
+    def _dataset_class_values(dataloader: ValidationDataloader) -> np.ndarray | None:
+        """Return dataset class values from a dataloader or dataloader list."""
+        if hasattr(dataloader, 'dataset') and hasattr(dataloader.dataset, 'class_values'):
+            return dataloader.dataset.class_values
+
+        if isinstance(dataloader, list):
+            for candidate in dataloader:
+                class_values = VisualizationCallback._dataset_class_values(candidate)
+                if class_values is not None:
+                    return class_values
+
+        return None
+
+    def _resolve_validation_dataloader(
+        self, trainer: pl.Trainer, pl_module: pl.LightningModule
+    ) -> ValidationDataloader:
+        """Return the validation dataloader using the available Lightning access pattern."""
+        if hasattr(trainer, 'val_dataloaders'):
+            return trainer.val_dataloaders
+        if hasattr(trainer, 'datamodule') and hasattr(trainer.datamodule, 'val_dataloader'):
+            return trainer.datamodule.val_dataloader()
+        return getattr(pl_module, '_val_dataloader', None)
+
+    def _visualize_batch(
+        self,
+        *,
+        batch: BatchTensors,
+        pl_module: pl.LightningModule,
+        save_name_template: str,
+        class_values: np.ndarray | None = None,
+    ) -> None:
+        """Run qualitative visualizations for the most informative batch samples."""
+        images = batch['image']
+        masks = batch['mask']
+        indices = self.visualizer.find_interesting_slices(masks, self.num_samples)
+
+        with torch.no_grad(), plt.ioff():
+            for i, idx in enumerate(indices):
+                try:
+                    image = images[idx].to(pl_module.device)
+                    mask = masks[idx]
+
+                    prediction = pl_module(image.unsqueeze(0))
+                    if isinstance(prediction, tuple):
+                        prediction = prediction[0]
+
+                    self.visualizer.visualize_prediction(
+                        image=image,
+                        mask=mask,
+                        prediction=prediction,
+                        save_path=str(self.plots_dir / save_name_template.format(sample_idx=i)),
+                        class_values=class_values,
+                    )
+                    plt.close('all')
+                except Exception as e:
+                    logger.error(f"Error visualizing sample {i}: {str(e)}")
+                    continue
+
+    def on_train_batch_end(
+        self,
+        trainer: pl.Trainer,
+        pl_module: pl.LightningModule,
+        outputs: dict[str, MetricValue] | None,
+        batch: BatchTensors | None,
+        batch_idx: int,
+    ) -> None:
         """Log training metrics after each batch."""
         if not self._is_global_zero(trainer):
             return
@@ -280,11 +360,11 @@ class VisualizationCallback(pl.Callback):
                 logger.error(f"Error in on_train_batch_end: {str(e)}")
 
     def on_validation_batch_start(
-                                    self, 
-                                    trainer: pl.Trainer, 
-                                    pl_module: pl.LightningModule, 
-                                    batch: Any, 
-                                    batch_idx: int, 
+                                    self,
+                                    trainer: pl.Trainer,
+                                    pl_module: pl.LightningModule,
+                                    batch: BatchTensors,
+                                    batch_idx: int,
                                     dataloader_idx: int = 0
                                 ) -> None:
         """Store first validation batch for visualization."""
@@ -324,63 +404,20 @@ class VisualizationCallback(pl.Callback):
 
             # Create visualizations using validation batch
             if self.val_batch is not None:
-                images = self.val_batch['image']
-                masks = self.val_batch['mask']
+                class_values = None
+                try:
+                    class_values = self._dataset_class_values(
+                        self._resolve_validation_dataloader(trainer, pl_module)
+                    )
+                except Exception as e:
+                    logger.warning(f"Could not access dataset class values: {e}")
 
-                # Select interesting slices
-                indices = self.visualizer.find_interesting_slices(masks, self.num_samples)
-                
-                # Create and save visualizations
-                with torch.no_grad(), plt.ioff():  # Disable gradients and interactive mode
-                    for i, idx in enumerate(indices):
-                        try:
-                            # Move image to the same device as the model
-                            image = images[idx].to(pl_module.device)
-                            mask = masks[idx]
-                            
-                            # Make prediction
-                            prediction = pl_module(image.unsqueeze(0))
-                            if isinstance(prediction, tuple):
-                                prediction = prediction[0]
-                            
-                            # Save visualization - pass class values if available from dataset
-                            class_values = None
-                            
-                            # Get the validation dataloader safely
-                            try:
-                                # For PyTorch Lightning >= 2.0
-                                if hasattr(trainer, 'val_dataloaders'):
-                                    val_dataloader = trainer.val_dataloaders
-                                # For PyTorch Lightning < 2.0
-                                elif hasattr(trainer, 'datamodule') and hasattr(trainer.datamodule, 'val_dataloader'):
-                                    val_dataloader = trainer.datamodule.val_dataloader()
-                                # Direct access from module
-                                elif hasattr(pl_module, '_val_dataloader'):
-                                    val_dataloader = pl_module._val_dataloader
-                                
-                                # Access class_values if available
-                                if hasattr(val_dataloader, 'dataset') and hasattr(val_dataloader.dataset, 'class_values'):
-                                    class_values = val_dataloader.dataset.class_values
-                                elif isinstance(val_dataloader, list) and len(val_dataloader) > 0:
-                                    if hasattr(val_dataloader[0].dataset, 'class_values'):
-                                        class_values = val_dataloader[0].dataset.class_values
-                            except Exception as e:
-                                logger.warning(f"Could not access dataset class values: {e}")
-                                class_values = None
-                            
-                            save_path = str(self.plots_dir / f'val_epoch_{trainer.current_epoch}_sample_{i}.png')
-                            self.visualizer.visualize_prediction(
-                                image=image,
-                                mask=mask,
-                                prediction=prediction,
-                                save_path=save_path,
-                                class_values=class_values
-                            )
-                            plt.close('all')  # Clean up after each visualization
-                            
-                        except Exception as e:
-                            logger.error(f"Error visualizing validation sample {i}: {str(e)}")
-                            continue
+                self._visualize_batch(
+                    batch=self.val_batch,
+                    pl_module=pl_module,
+                    save_name_template=f'val_epoch_{trainer.current_epoch}_sample_{{sample_idx}}.png',
+                    class_values=class_values,
+                )
 
                 # Clear stored validation batch
                 self.val_batch = None
@@ -397,48 +434,18 @@ class VisualizationCallback(pl.Callback):
             # Get first batch from train dataloader
             train_loader = trainer.train_dataloader
             batch = next(iter(train_loader))
-            images = batch['image']
-            masks = batch['mask']
+            class_values = None
+            try:
+                class_values = self._dataset_class_values(train_loader)
+            except Exception as e:
+                logger.warning(f"Could not access training dataset class values: {e}")
 
-            # Select interesting slices
-            indices = self.visualizer.find_interesting_slices(masks, self.num_samples)
-            
-            # Create and save visualizations
-            with torch.no_grad(), plt.ioff():  # Disable gradients and interactive mode
-                for i, idx in enumerate(indices):
-                    try:
-                        # Move image to the same device as the model
-                        image = images[idx].to(pl_module.device)
-                        mask = masks[idx]
-                        
-                        # Make prediction
-                        prediction = pl_module(image.unsqueeze(0))
-                        if isinstance(prediction, tuple):
-                            prediction = prediction[0]
-                        
-                        # Save visualization - pass class values if available from dataset
-                        class_values = None
-                        try:
-                            # Check if dataloader has dataset attribute and class_values
-                            if hasattr(train_loader, 'dataset') and hasattr(train_loader.dataset, 'class_values'):
-                                class_values = train_loader.dataset.class_values
-                        except Exception as e:
-                            logger.warning(f"Could not access training dataset class values: {e}")
-                            class_values = None
-                        
-                        save_path = str(self.plots_dir / f'epoch_{trainer.current_epoch}_sample_{i}.png')
-                        self.visualizer.visualize_prediction(
-                            image=image,
-                            mask=mask,
-                            prediction=prediction,
-                            save_path=save_path,
-                            class_values=class_values
-                        )
-                        plt.close('all')  # Clean up after each visualization
-                        
-                    except Exception as e:
-                        logger.error(f"Error visualizing sample {i}: {str(e)}")
-                        continue
+            self._visualize_batch(
+                batch=batch,
+                pl_module=pl_module,
+                save_name_template=f'epoch_{trainer.current_epoch}_sample_{{sample_idx}}.png',
+                class_values=class_values,
+            )
                         
         except Exception as e:
             logger.error(f"Error in on_train_epoch_start: {str(e)}")

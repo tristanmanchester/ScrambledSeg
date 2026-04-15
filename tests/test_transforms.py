@@ -3,14 +3,10 @@
 from __future__ import annotations
 
 import logging
-import sys
 from pathlib import Path
 
 import pytest
 
-PROJECT_ROOT = Path(__file__).resolve().parents[1]
-if str(PROJECT_ROOT) not in sys.path:
-    sys.path.insert(0, str(PROJECT_ROOT))
 
 np = pytest.importorskip("numpy")
 
@@ -56,3 +52,16 @@ def test_create_val_transform_preserves_pre_normalized_image_range() -> None:
 
     assert np.allclose(transformed["image"], image)
     assert np.array_equal(transformed["mask"], mask)
+
+
+def test_create_train_transform_rejects_unknown_rotate_border_mode() -> None:
+    config = _augmentation_config()
+    config["augmentation"].update(
+        {
+            "rotate_limit": 45,
+            "rotate_border_mode": "mirror-ball",
+        }
+    )
+
+    with pytest.raises(ValueError, match="Unsupported rotate_border_mode"):
+        transforms_module.create_train_transform(config)

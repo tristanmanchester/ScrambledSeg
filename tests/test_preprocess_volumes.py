@@ -2,20 +2,16 @@
 
 from __future__ import annotations
 
-import sys
 from collections import Counter
 from pathlib import Path
 
 import pytest
 
-PROJECT_ROOT = Path(__file__).resolve().parents[1]
-if str(PROJECT_ROOT) not in sys.path:
-    sys.path.insert(0, str(PROJECT_ROOT))
 
 np = pytest.importorskip("numpy")
 tifffile = pytest.importorskip("tifffile")
 
-from scrambledSeg.data.preprocess_volumes import extract_tiles_from_slice
+from scrambledSeg.data.preprocess_volumes import SliceInfo, create_datasets, extract_tiles_from_slice
 
 
 def test_extract_tiles_from_slice_covers_all_orientations_for_non_cubic_volume(tmp_path: Path) -> None:
@@ -43,3 +39,31 @@ def test_extract_tiles_from_slice_covers_all_orientations_for_non_cubic_volume(t
     assert counts["xy"] == 2
     assert counts["xz"] == 3
     assert counts["yz"] == 4
+
+
+def test_create_datasets_raises_when_expected_tile_files_are_missing(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """Dataset creation should fail if the extracted tiles were never persisted."""
+
+    monkeypatch.setattr(
+        "scrambledSeg.data.preprocess_volumes.calculate_total_tiles",
+        lambda data_paths, tile_size=256, overlap=64: 1,
+    )
+    monkeypatch.setattr(
+        "scrambledSeg.data.preprocess_volumes._process_slice",
+        lambda args: (
+            args[0],
+            args[1],
+            [SliceInfo("volume", "xy_slice000", 0)],
+        ),
+    )
+
+    with pytest.raises(FileNotFoundError, match="Expected extracted tile files"):
+        create_datasets(
+            data_paths=["/tmp/data.tif"],
+            label_paths=["/tmp/label.tif"],
+            output_dir=tmp_path / "out",
+            split_ratios={"train": 1.0},
+        )

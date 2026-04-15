@@ -8,7 +8,7 @@ plt.style.use('seaborn-v0_8-bright')
 import seaborn as sns
 from pathlib import Path
 import logging
-from typing import Dict, List, Optional, Union, Tuple
+from typing import List, Optional, Union
 import os
 import pandas as pd
 import torch.nn.functional as F
@@ -83,27 +83,52 @@ class SegmentationVisualizer:
                 
         return tensor
 
+    def _mask_coverage(self, mask: Union[torch.Tensor, np.ndarray]) -> float:
+        """Calculate non-background coverage for binary or multi-class masks."""
+        if torch.is_tensor(mask):
+            mask = mask.detach().cpu().numpy()
+
+        if mask.dtype in [np.uint8, np.int32, np.int64]:
+            return float(np.mean(mask > 0))
+
+        mask = self._normalize_tensor(mask)
+        return float(np.mean(mask > 0.5))
+
+    def _load_metrics_dataframe(
+        self,
+        *,
+        missing_message: str,
+        insufficient_message: str,
+    ) -> Optional[pd.DataFrame]:
+        """Load the metrics CSV and coerce numeric columns for plotting."""
+        if self.metrics_file is None or not os.path.exists(self.metrics_file):
+            logger.warning(missing_message)
+            return None
+
+        df = pd.read_csv(self.metrics_file)
+
+        for col in df.columns:
+            if col in ['step', 'epoch']:
+                continue
+            df[col] = pd.to_numeric(df[col].replace('', float('nan')), errors='coerce')
+
+        if len(df) < 2:
+            logger.warning(insufficient_message)
+            return None
+
+        return df
+
     def find_interesting_slices(self, masks, k: int = 4) -> List[int]:
         """Find k most interesting slices based on mask coverage."""
-        coverages = []
-        for i in range(len(masks)):
-            # Get the mask
-            mask = masks[i]
-            if torch.is_tensor(mask):
-                mask = mask.detach().cpu().numpy()
-                
-            # For multi-class segmentation (integer labels), check for non-background
-            # For binary segmentation (float values), use threshold
-            if mask.dtype in [np.uint8, np.int32, np.int64]:
-                # Multi-class case - calculate percent of non-background pixels
-                coverage = float(np.mean(mask > 0))
-            else:
-                # Binary case - normalize and threshold
-                mask = self._normalize_tensor(mask)
-                coverage = float(np.mean(mask > 0.5))
-                
-            if coverage >= self.min_coverage:
-                coverages.append((i, coverage))
+        all_coverages = [
+            (i, self._mask_coverage(masks[i]))
+            for i in range(len(masks))
+        ]
+        coverages = [
+            (i, coverage)
+            for i, coverage in all_coverages
+            if coverage >= self.min_coverage
+        ]
         
         coverages.sort(key=lambda x: x[1], reverse=True)
         indices = [i for i, _ in coverages[:k]]
@@ -113,25 +138,6 @@ class SegmentationVisualizer:
                 f"Only found {len(indices)} slices with coverage >= {self.min_coverage}. "
                 "Taking best available slices."
             )
-            all_coverages = []
-            for i in range(len(masks)):
-                # Get the mask
-                mask = masks[i]
-                if torch.is_tensor(mask):
-                    mask = mask.detach().cpu().numpy()
-                    
-                # For multi-class segmentation (integer labels), check for non-background
-                # For binary segmentation (float values), use threshold
-                if mask.dtype in [np.uint8, np.int32, np.int64]:
-                    # Multi-class case - calculate percent of non-background pixels
-                    coverage = float(np.mean(mask > 0))
-                else:
-                    # Binary case - normalize and threshold
-                    mask = self._normalize_tensor(mask)
-                    coverage = float(np.mean(mask > 0.5))
-                    
-                all_coverages.append((i, coverage))
-                
             all_coverages.sort(key=lambda x: x[1], reverse=True)
             additional_indices = [i for i, _ in all_coverages if i not in indices]
             indices.extend(additional_indices[:k - len(indices)])
@@ -297,19 +303,11 @@ class SegmentationVisualizer:
         dpi: Optional[int] = None,
     ) -> Optional[plt.Figure]:
         """Plot training and validation metrics over time with loss and IoU on the same plot."""
-        if not os.path.exists(self.metrics_file):
-            logger.warning("No metrics file found yet. Skipping plot generation.")
-            return None
-            
-        df = pd.read_csv(self.metrics_file)
-        
-        for col in df.columns:
-            if col in ['step', 'epoch']:
-                continue
-            df[col] = pd.to_numeric(df[col].replace('', float('nan')), errors='coerce')
-        
-        if len(df) < 2:
-            logger.warning("Not enough data points to plot metrics")
+        df = self._load_metrics_dataframe(
+            missing_message="No metrics file found yet. Skipping plot generation.",
+            insufficient_message="Not enough data points to plot metrics",
+        )
+        if df is None:
             return None
         
         # Create figure with single plot
@@ -395,20 +393,11 @@ class SegmentationVisualizer:
         dpi: Optional[int] = None
     ) -> Optional[plt.Figure]:
         """Plot comprehensive training metrics including all performance measures."""
-        if not os.path.exists(self.metrics_file):
-            logger.warning("No metrics file found for comprehensive plotting.")
-            return None
-            
-        df = pd.read_csv(self.metrics_file)
-        
-        # Convert columns to numeric
-        for col in df.columns:
-            if col in ['step', 'epoch']:
-                continue
-            df[col] = pd.to_numeric(df[col].replace('', float('nan')), errors='coerce')
-        
-        if len(df) < 2:
-            logger.warning("Not enough data points for comprehensive plotting")
+        df = self._load_metrics_dataframe(
+            missing_message="No metrics file found for comprehensive plotting.",
+            insufficient_message="Not enough data points for comprehensive plotting",
+        )
+        if df is None:
             return None
         
         # Create figure with subplots
@@ -522,20 +511,11 @@ class SegmentationVisualizer:
         dpi: Optional[int] = None
     ) -> Optional[plt.Figure]:
         """Plot per-class performance metrics."""
-        if not os.path.exists(self.metrics_file):
-            logger.warning("No metrics file found for per-class plotting.")
-            return None
-            
-        df = pd.read_csv(self.metrics_file)
-        
-        # Convert columns to numeric
-        for col in df.columns:
-            if col in ['step', 'epoch']:
-                continue
-            df[col] = pd.to_numeric(df[col].replace('', float('nan')), errors='coerce')
-        
-        if len(df) < 2:
-            logger.warning("Not enough data points for per-class plotting")
+        df = self._load_metrics_dataframe(
+            missing_message="No metrics file found for per-class plotting.",
+            insufficient_message="Not enough data points for per-class plotting",
+        )
+        if df is None:
             return None
         
         # Default class names if not provided - auto-detect from columns
@@ -612,29 +592,22 @@ class SegmentationVisualizer:
         if not os.path.exists(self.metrics_file):
             logger.warning("No metrics file found for efficiency plotting.")
             return None
-            
-        # For now, create a placeholder that could be extended when progress metrics are logged
-        # This would need to be enhanced when the progress metrics are actually being logged to CSV
-        
+
         fig, ((ax1, ax2), (ax3, ax4)) = plt.subplots(2, 2, figsize=(16, 12))
-        
-        # Placeholder plots - these would be populated with actual progress metrics
-        ax1.text(0.5, 0.5, 'Learning Rate\n(To be implemented with\nprogress metric logging)', 
-                ha='center', va='center', transform=ax1.transAxes)
+
+        placeholder_text = "Progress metrics unavailable."
+        ax1.text(0.5, 0.5, placeholder_text, ha='center', va='center', transform=ax1.transAxes)
         ax1.set_title('Learning Rate Schedule')
-        
-        ax2.text(0.5, 0.5, 'Gradient Norms\n(To be implemented with\nprogress metric logging)', 
-                ha='center', va='center', transform=ax2.transAxes)
+
+        ax2.text(0.5, 0.5, placeholder_text, ha='center', va='center', transform=ax2.transAxes)
         ax2.set_title('Gradient Statistics')
-        
-        ax3.text(0.5, 0.5, 'Training Speed\n(To be implemented with\nprogress metric logging)', 
-                ha='center', va='center', transform=ax3.transAxes)
+
+        ax3.text(0.5, 0.5, placeholder_text, ha='center', va='center', transform=ax3.transAxes)
         ax3.set_title('Samples per Second')
-        
-        ax4.text(0.5, 0.5, 'Memory Usage\n(To be implemented with\nprogress metric logging)', 
-                ha='center', va='center', transform=ax4.transAxes)
+
+        ax4.text(0.5, 0.5, placeholder_text, ha='center', va='center', transform=ax4.transAxes)
         ax4.set_title('GPU Memory Usage')
-        
+
         plt.tight_layout()
         
         if save_path:

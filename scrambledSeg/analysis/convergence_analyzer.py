@@ -4,13 +4,67 @@ import logging
 from collections import deque
 from dataclasses import dataclass
 from enum import Enum
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Literal, TypedDict
 
 import numpy as np
 import pytorch_lightning as pl
 import torch
 
 logger = logging.getLogger(__name__)
+
+ConvergenceMode = Literal["min", "max"]
+TrendDirection = Literal["improving", "stable", "degrading", "unknown"]
+
+
+class ConvergenceConfig(TypedDict, total=False):
+    """Optional per-metric detector overrides."""
+
+    patience: int
+    min_delta: float
+    window_size: int
+    stability_threshold: float
+    mode: ConvergenceMode
+
+
+ConvergenceConfigs = dict[str, ConvergenceConfig]
+
+
+class GlobalConvergenceState(TypedDict, total=False):
+    """Aggregate convergence status across all tracked metrics."""
+
+    step: int
+    total_metrics: int
+    converged_metrics: int
+    plateaued_metrics: int
+    improving_metrics: int
+    convergence_ratio: float
+    plateau_ratio: float
+    overall_status: str
+
+
+class ConvergenceMetricDetail(TypedDict):
+    """Detailed convergence report for a single metric."""
+
+    current_value: float | None
+    best_value: float
+    best_step: int
+    steps_since_improvement: int
+    status: str
+    converged: bool
+    stability: float
+    trend: TrendDirection
+
+
+class ConvergenceSummary(TypedDict):
+    """Structured convergence report returned by the analyzer/callback."""
+
+    global_state: GlobalConvergenceState
+    metric_details: dict[str, ConvergenceMetricDetail]
+
+
+LoggedOutputValue = torch.Tensor | int | float | str
+BatchOutput = torch.Tensor | dict[str, LoggedOutputValue] | int | float | None
+BatchTensors = dict[str, torch.Tensor] | None
 
 
 class ConvergenceStatus(Enum):
@@ -34,7 +88,7 @@ class ConvergenceState:
     steps_since_improvement: int
     improvement_threshold: float
     stability_metric: float
-    trend_direction: str  # 'improving', 'stable', 'degrading'
+    trend_direction: TrendDirection
 
 
 class ConvergenceDetector:
@@ -47,7 +101,7 @@ class ConvergenceDetector:
         min_delta: float = 1e-4,
         window_size: int = 5,
         stability_threshold: float = 1e-3,
-        mode: str = "min",  # 'min' for loss, 'max' for accuracy metrics
+        mode: ConvergenceMode = "min",
     ):
         """Initialize convergence detector.
 
@@ -101,7 +155,7 @@ class ConvergenceDetector:
         normalized_std = recent_std / max(value_range, 1e-8)
         return normalized_std
 
-    def _determine_trend(self) -> str:
+    def _determine_trend(self) -> TrendDirection:
         """Determine the trend direction of recent values."""
         if len(self.moving_avg) < 3:
             return "unknown"
@@ -189,26 +243,26 @@ class ConvergenceDetector:
 class MultiMetricConvergenceAnalyzer:
     """Analyzes convergence across multiple metrics simultaneously."""
 
-    def __init__(self, convergence_configs: Dict[str, Dict[str, Any]]):
+    def __init__(self, convergence_configs: ConvergenceConfigs):
         """Initialize analyzer with multiple metrics.
 
         Args:
-            convergence_configs: Dict mapping metric names to detector configurations
+        convergence_configs: Dict mapping metric names to detector configurations
         """
-        self.detectors = {}
+        self.detectors: dict[str, ConvergenceDetector] = {}
 
         for metric_name, config in convergence_configs.items():
             self.detectors[metric_name] = ConvergenceDetector(
                 metric_name=metric_name, **config
             )
 
-        self.global_convergence_state = {}
+        self.global_convergence_state: GlobalConvergenceState = {}
 
     def update(
-        self, metrics: Dict[str, float], step: int
-    ) -> Dict[str, ConvergenceState]:
+        self, metrics: dict[str, float], step: int
+    ) -> dict[str, ConvergenceState]:
         """Update all detectors with new metric values."""
-        states = {}
+        states: dict[str, ConvergenceState] = {}
 
         for metric_name, value in metrics.items():
             if metric_name in self.detectors:
@@ -220,7 +274,7 @@ class MultiMetricConvergenceAnalyzer:
 
         return states
 
-    def _update_global_state(self, states: Dict[str, ConvergenceState], step: int):
+    def _update_global_state(self, states: dict[str, ConvergenceState], step: int) -> None:
         """Update global convergence analysis."""
         converged_metrics = sum(
             1
@@ -249,7 +303,7 @@ class MultiMetricConvergenceAnalyzer:
             "overall_status": self._determine_overall_status(states),
         }
 
-    def _determine_overall_status(self, states: Dict[str, ConvergenceState]) -> str:
+    def _determine_overall_status(self, states: dict[str, ConvergenceState]) -> str:
         """Determine overall training status."""
         if not states:
             return "unknown"
@@ -316,9 +370,9 @@ class MultiMetricConvergenceAnalyzer:
 
         return False
 
-    def get_convergence_summary(self) -> Dict[str, Any]:
+    def get_convergence_summary(self) -> ConvergenceSummary:
         """Get comprehensive convergence summary."""
-        summary = {
+        summary: ConvergenceSummary = {
             "global_state": self.global_convergence_state.copy(),
             "metric_details": {},
         }
@@ -344,7 +398,7 @@ class ConvergenceCallback(pl.Callback):
 
     def __init__(
         self,
-        convergence_configs: Dict[str, Dict[str, Any]],
+        convergence_configs: ConvergenceConfigs,
         log_interval: int = 10,
         enable_early_stopping: bool = False,
         early_stop_patience: int = 20,
@@ -369,13 +423,20 @@ class ConvergenceCallback(pl.Callback):
 
         self.last_log_step = 0
 
-    def on_train_batch_end(self, trainer, pl_module, outputs, batch, batch_idx):
+    def on_train_batch_end(
+        self,
+        trainer: pl.Trainer,
+        pl_module: pl.LightningModule,
+        outputs: BatchOutput,
+        batch: BatchTensors,
+        batch_idx: int,
+    ) -> None:
         """Update convergence analysis after each training batch."""
         if outputs is None:
             return
 
         # Extract relevant metrics from outputs
-        metrics = {}
+        metrics: dict[str, float] = {}
         if isinstance(outputs, torch.Tensor):
             metrics["loss"] = outputs.item()
         elif isinstance(outputs, dict):
@@ -398,7 +459,7 @@ class ConvergenceCallback(pl.Callback):
             self._log_convergence_state(trainer, states)
             self.last_log_step = trainer.global_step
 
-    def on_validation_epoch_end(self, trainer, pl_module):
+    def on_validation_epoch_end(self, trainer: pl.Trainer, pl_module: pl.LightningModule) -> None:
         """Check for early stopping after validation."""
         if not self.enable_early_stopping:
             return
@@ -412,7 +473,9 @@ class ConvergenceCallback(pl.Callback):
             logger.info("Early stopping triggered by convergence analysis")
             trainer.should_stop = True
 
-    def _log_convergence_state(self, trainer, states: Dict[str, ConvergenceState]):
+    def _log_convergence_state(
+        self, trainer: pl.Trainer, states: dict[str, ConvergenceState]
+    ) -> None:
         """Log convergence state information."""
         # Log individual metric convergence states
         for metric_name, state in states.items():
@@ -449,6 +512,6 @@ class ConvergenceCallback(pl.Callback):
                 step=trainer.global_step,
             )
 
-    def get_convergence_report(self) -> Dict[str, Any]:
+    def get_convergence_report(self) -> ConvergenceSummary:
         """Get final convergence analysis report."""
         return self.analyzer.get_convergence_summary()

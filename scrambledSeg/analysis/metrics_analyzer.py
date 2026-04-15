@@ -5,15 +5,39 @@ import numpy as np
 import json
 import logging
 from pathlib import Path
-from typing import Dict, List, Optional, Tuple, Any
+from typing import List, Optional, TypedDict
 from dataclasses import dataclass, asdict
 from scipy import stats
-import matplotlib.pyplot as plt
-import seaborn as sns
 
 logger = logging.getLogger(__name__)
 
 DEFAULT_CLASS_NAMES = ["Class_0", "Class_1", "Class_2", "Class_3"]
+PaperTable = str | pd.DataFrame
+
+
+class StatisticalTestResult(TypedDict):
+    """Structured output for a paired train/validation statistical test."""
+
+    t_statistic: float
+    p_value: float
+    significant: bool
+    interpretation: str
+
+
+class KeyStatistics(TypedDict, total=False):
+    """Key scalar outputs exported for papers/reports."""
+
+    total_epochs: int
+    training_time_hours: float
+    final_val_iou: float
+    final_val_precision: float
+    final_val_recall: float
+    final_val_f1: float
+    convergence_epoch_iou: int
+    generalization_gap_iou: float
+    best_val_iou: float
+    best_val_iou_epoch: int
+
 
 @dataclass
 class MetricSummary:
@@ -40,11 +64,11 @@ class TrainingAnalysis:
     total_epochs: int
     total_steps: int
     training_time_minutes: Optional[float]
-    convergence_analysis: Dict[str, Any]
-    metric_summaries: Dict[str, MetricSummary]
-    per_class_analysis: Dict[str, Dict[str, MetricSummary]]
-    generalization_gap: Dict[str, float]
-    statistical_tests: Dict[str, Any]
+    convergence_analysis: dict[str, int]
+    metric_summaries: dict[str, MetricSummary]
+    per_class_analysis: dict[str, dict[str, MetricSummary]]
+    generalization_gap: dict[str, float]
+    statistical_tests: dict[str, StatisticalTestResult]
 
 class MetricsAnalyzer:
     """Comprehensive metrics analysis and reporting."""
@@ -59,7 +83,7 @@ class MetricsAnalyzer:
 
         self.metrics_file = Path(metrics_file)
         self.experiment_name = experiment_name
-        self.df = None
+        self.df: pd.DataFrame | None = None
         self.set_class_names(class_names or DEFAULT_CLASS_NAMES)
 
         self._load_data()
@@ -134,7 +158,7 @@ class MetricsAnalyzer:
             best_value = max_val
             best_idx = clean_series.idxmax()
         
-        best_epoch = self.df.loc[best_idx, 'epoch'] if best_idx in self.df.index else -1
+        best_epoch = int(self.df.loc[best_idx, 'epoch']) if best_idx in self.df.index else -1
         
         # Convergence analysis (simplified)
         convergence_epoch = self._estimate_convergence_epoch(clean_series, metric_name)
@@ -175,11 +199,11 @@ class MetricsAnalyzer:
             # Find first sustained convergence (at least window_size consecutive steps)
             for i in range(window_size, len(converged_indices) - window_size):
                 if converged_indices.iloc[i:i+window_size].all():
-                    return self.df.loc[series.index[i], 'epoch']
+                    return int(self.df.loc[series.index[i], 'epoch'])
         
         return None
     
-    def analyze_generalization_gap(self) -> Dict[str, float]:
+    def analyze_generalization_gap(self) -> dict[str, float]:
         """Calculate generalization gap between training and validation metrics."""
         gaps = {}
         
@@ -207,7 +231,7 @@ class MetricsAnalyzer:
         
         return gaps
     
-    def perform_statistical_tests(self) -> Dict[str, Any]:
+    def perform_statistical_tests(self) -> dict[str, StatisticalTestResult]:
         """Perform statistical tests on metrics."""
         tests = {}
         
@@ -240,7 +264,7 @@ class MetricsAnalyzer:
         
         return tests
     
-    def analyze_per_class_performance(self) -> Dict[str, Dict[str, MetricSummary]]:
+    def analyze_per_class_performance(self) -> dict[str, dict[str, MetricSummary]]:
         """Analyze per-class metric performance."""
         per_class_analysis = {}
         
@@ -339,7 +363,18 @@ class MetricsAnalyzer:
         report_data = asdict(analysis)
         
         with open(filepath, 'w') as f:
-            json.dump(report_data, f, indent=2, default=str)
+            json.dump(report_data, f, indent=2, default=self._json_default)
+
+    @staticmethod
+    def _json_default(
+        value: np.generic | Path | str | int | float | bool | None,
+    ) -> str | int | float | bool | None:
+        """Serialize NumPy scalars and paths into JSON-compatible values."""
+        if isinstance(value, np.generic):
+            return value.item()
+        if isinstance(value, Path):
+            return str(value)
+        return str(value)
     
     def _generate_markdown_report(self, analysis: TrainingAnalysis, filepath: Path):
         """Generate human-readable markdown report."""
@@ -433,13 +468,13 @@ class MetricsAnalyzer:
         df_summary = pd.DataFrame(rows)
         df_summary.to_csv(filepath, index=False)
     
-    def export_for_paper(self, output_dir: str, format_for_latex: bool = True) -> Dict[str, Path]:
+    def export_for_paper(self, output_dir: str, format_for_latex: bool = True) -> dict[str, Path]:
         """Export analysis results formatted for academic paper inclusion."""
         analysis = self.run_full_analysis()
         output_dir = Path(output_dir)
         output_dir.mkdir(parents=True, exist_ok=True)
         
-        exported_files = {}
+        exported_files: dict[str, Path] = {}
         
         # Create paper-ready summary table
         paper_table = self._create_paper_table(analysis, format_for_latex)
@@ -457,13 +492,13 @@ class MetricsAnalyzer:
         key_stats = self._extract_key_statistics(analysis)
         stats_file = output_dir / "key_statistics.json"
         with open(stats_file, 'w') as f:
-            json.dump(key_stats, f, indent=2)
+            json.dump(key_stats, f, indent=2, default=self._json_default)
         
         exported_files['key_statistics'] = stats_file
         
         return exported_files
     
-    def _create_paper_table(self, analysis: TrainingAnalysis, latex_format: bool = True) -> str:
+    def _create_paper_table(self, analysis: TrainingAnalysis, latex_format: bool = True) -> PaperTable:
         """Create a formatted metrics table suitable for reports."""
         # Select key metrics for paper
         key_metrics = {
@@ -516,9 +551,9 @@ class MetricsAnalyzer:
             
             return pd.DataFrame(rows)
     
-    def _extract_key_statistics(self, analysis: TrainingAnalysis) -> Dict[str, Any]:
+    def _extract_key_statistics(self, analysis: TrainingAnalysis) -> KeyStatistics:
         """Extract key statistics for paper text."""
-        stats = {
+        stats: KeyStatistics = {
             'total_epochs': analysis.total_epochs,
             'training_time_hours': analysis.training_time_minutes / 60 if analysis.training_time_minutes else None,
             'final_val_iou': None,
@@ -548,5 +583,9 @@ class MetricsAnalyzer:
         if 'val_f1' in analysis.metric_summaries:
             stats['final_val_f1'] = analysis.metric_summaries['val_f1'].final_value
         
-        # Remove None values
-        return {k: v for k, v in stats.items() if v is not None}
+        # Remove None values and convert NumPy scalars for JSON serialization
+        return {
+            k: v.item() if isinstance(v, np.generic) else v
+            for k, v in stats.items()
+            if v is not None
+        }

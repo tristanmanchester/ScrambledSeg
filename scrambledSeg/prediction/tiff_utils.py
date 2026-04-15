@@ -2,9 +2,11 @@
 import numpy as np
 from PIL import Image
 import math
-from typing import Tuple, List, Iterator, Union
+from typing import Tuple, List, Iterator
 import logging
 import tifffile
+
+from .types import PathLike, TileLocation, TiledPrediction
 
 logger = logging.getLogger(__name__)
 
@@ -22,7 +24,7 @@ class TiffHandler:
         self.overlap = overlap
         self.trim_size = overlap // 2  # Amount to trim from each edge
         
-    def load_tiff(self, path: str) -> Union[np.ndarray, List[np.ndarray]]:
+    def load_tiff(self, path: PathLike) -> np.ndarray:
         """Load TIFF image as numpy array. Supports both single and multipage TIFFs.
         
         Args:
@@ -33,18 +35,7 @@ class TiffHandler:
             For multipage: numpy array of shape (Z, H, W) or (Z, H, W, C)
         """
         try:
-            # First try tifffile for multipage support
-            with tifffile.TiffFile(path) as tif:
-                if len(tif.pages) > 1:
-                    # Handle multipage TIFF
-                    data = tifffile.imread(path)
-                    if data.ndim == 3:  # Z,H,W
-                        data = data.transpose(0, 1, 2)  # Ensure Z,H,W order
-                    elif data.ndim == 4:  # Z,H,W,C
-                        data = data.transpose(0, 1, 2, 3)  # Ensure Z,H,W,C order
-                else:
-                    # Single page TIFF
-                    data = tifffile.imread(path)
+            data = tifffile.imread(path)
         except Exception as e:
             logger.warning(f"Failed to load with tifffile, falling back to PIL: {e}")
             # Fallback to PIL for simple TIFFs
@@ -54,7 +45,7 @@ class TiffHandler:
         logger.info(f"Loaded image of shape {data.shape} and dtype {data.dtype}")
         return data
     
-    def save_tiff(self, data: np.ndarray, path: str, threshold: float = 0.5):
+    def save_tiff(self, data: np.ndarray, path: PathLike, threshold: float = 0.5) -> None:
         """Save numpy array as TIFF image. Supports both single and multipage TIFFs.
         
         Args:
@@ -86,7 +77,7 @@ class TiffHandler:
             
         logger.info(f"Saved image to {path} with shape {data.shape} and values in range [{np.min(data)}-{np.max(data)}]")
     
-    def get_tile_locations(self, image_shape: Tuple[int, ...]) -> List[Tuple[slice, slice, bool, bool]]:
+    def get_tile_locations(self, image_shape: Tuple[int, ...]) -> List[TileLocation]:
         """Get list of tile locations as slice tuples.
         
         Args:
@@ -133,7 +124,7 @@ class TiffHandler:
         
         return tile_locations
     
-    def merge_tiles(self, tiles: List[Tuple[np.ndarray, Tuple[slice, slice, bool, bool]]], output_shape: Tuple[int, ...]) -> np.ndarray:
+    def merge_tiles(self, tiles: List[TiledPrediction], output_shape: Tuple[int, ...]) -> np.ndarray:
         """Merge tiles back into a single image, handling overlaps.
         
         Args:
@@ -160,7 +151,7 @@ class TiffHandler:
             logger.info("Using standard weighted merging for continuous values")
             return self._merge_tiles_standard(tiles, output_shape)
     
-    def _merge_tiles_multiclass(self, tiles: List[Tuple[np.ndarray, Tuple[slice, slice, bool, bool]]], output_shape: Tuple[int, ...]) -> np.ndarray:
+    def _merge_tiles_multiclass(self, tiles: List[TiledPrediction], output_shape: Tuple[int, ...]) -> np.ndarray:
         """Merge tiles for multi-class segmentation.
         
         For class indices, we can't simply blend values as that would create non-integer classes.
@@ -220,7 +211,7 @@ class TiffHandler:
         
         return output
     
-    def _merge_tiles_standard(self, tiles: List[Tuple[np.ndarray, Tuple[slice, slice, bool, bool]]], output_shape: Tuple[int, ...]) -> np.ndarray:
+    def _merge_tiles_standard(self, tiles: List[TiledPrediction], output_shape: Tuple[int, ...]) -> np.ndarray:
         """Merge tiles with standard weighted blending for continuous values.
         
         This is used for probability maps and other continuous value predictions.
@@ -257,7 +248,7 @@ class TiffHandler:
         
         return output
     
-    def iter_tiles(self, image: np.ndarray) -> Iterator[Tuple[np.ndarray, Tuple[slice, slice, bool, bool]]]:
+    def iter_tiles(self, image: np.ndarray) -> Iterator[TiledPrediction]:
         """Iterate over tiles in an image.
         
         Args:

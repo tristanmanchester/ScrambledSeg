@@ -3,21 +3,28 @@ import numpy as np
 import torch
 from enum import Enum
 from pathlib import Path
-from typing import Optional, Union, List, Tuple
+from typing import List, Optional, Union
 import logging
 from tqdm import tqdm
 
+from ..axis import AxisPredictor, Axis
 from .data import TomoDataset
-from .axis import AxisPredictor, Axis
 from .tiff_utils import TiffHandler
+from .types import (
+    NormalizationRange,
+    PathLike,
+    PredictionAccumulator,
+    TileLocation,
+    TiledPrediction,
+)
 
 logger = logging.getLogger(__name__)
 
 class PredictionMode(Enum):
     """Available prediction modes."""
-    SINGLE_AXIS = "single"  # Just XY predictions
-    THREE_AXIS = "three"    # XY, YZ, XZ
-    TWELVE_AXIS = "twelve"  # 3 axes × 4 rotations (0°, 90°, 180°, 270°)
+    SINGLE_AXIS = "single"
+    THREE_AXIS = "three"
+    TWELVE_AXIS = "twelve"
 
 class EnsembleMethod(Enum):
     """Methods for combining multiple predictions."""
@@ -34,7 +41,7 @@ class Predictor:
         ensemble_method: Union[EnsembleMethod, str] = EnsembleMethod.MEAN,
         batch_size: int = 8,
         device: Optional[str] = None,
-        normalize_range: Optional[tuple] = None,
+        normalize_range: Optional[NormalizationRange] = None,
         tile_size: int = 512,
         tile_overlap: int = 64,
         precision: str = 'bf16'
@@ -115,10 +122,18 @@ class Predictor:
             return np.asarray(detached.tolist(), dtype=np.bool_)
         return np.asarray(detached.tolist(), dtype=np.int64)
 
+    def _get_inference_dtype(self) -> torch.dtype:
+        """Return the configured inference dtype for model execution."""
+        if self.precision == 'bf16' and torch.cuda.is_bf16_supported():
+            return torch.bfloat16
+        if self.precision == '16' and torch.cuda.is_available():
+            return torch.float16
+        return torch.float32
+
     def predict(
         self,
-        input_path: Union[str, Path],
-        output_path: Union[str, Path],
+        input_path: PathLike,
+        output_path: PathLike,
         dataset_path: str = "/data"
     ) -> None:
         """Predict segmentation for input file.
@@ -140,8 +155,8 @@ class Predictor:
 
     def predict_volume(
         self, 
-        input_path: Union[str, Path],
-        output_path: Union[str, Path],
+        input_path: PathLike,
+        output_path: PathLike,
         dataset_path: str = "/data"
     ) -> None:
         """Predict segmentation for entire volume.
@@ -191,8 +206,8 @@ class Predictor:
 
     def predict_image(
         self,
-        input_path: Union[str, Path],
-        output_path: Union[str, Path],
+        input_path: PathLike,
+        output_path: PathLike,
     ) -> None:
         """Predict segmentation for image using tiling.
         
@@ -241,9 +256,9 @@ class Predictor:
             Processed image
         """
         # Process tiles
-        tiles = []
-        batch_tiles = []
-        batch_locations = []
+        tiles: List[TiledPrediction] = []
+        batch_tiles: List[torch.Tensor] = []
+        batch_locations: List[TileLocation] = []
         
         logger.info("Processing tiles...")
         for tile_data, location in tqdm(self.tiff_handler.iter_tiles(image)):
@@ -277,7 +292,7 @@ class Predictor:
         volume: np.ndarray,
         axis: Axis,
         rotation_angle: float = 0
-    ) -> tuple:
+    ) -> PredictionAccumulator:
         """Predict all slices along an axis.
         
         Args:
@@ -312,13 +327,10 @@ class Predictor:
                 batch_slices.append(slice_tensor)
             
             # Stack batch, convert to appropriate precision and predict
-            dtype = torch.float32
-            if self.precision == 'bf16' and torch.cuda.is_bf16_supported():
-                dtype = torch.bfloat16
-            elif self.precision == '16' and torch.cuda.is_available():
-                dtype = torch.float16
-                
-            batch_tensor = torch.cat(batch_slices, dim=0).to(device=self.device, dtype=dtype)
+            batch_tensor = torch.cat(batch_slices, dim=0).to(
+                device=self.device,
+                dtype=self._get_inference_dtype(),
+            )
             
             # Get predictions
             pred_batch = self.model(batch_tensor)
@@ -393,13 +405,12 @@ class Predictor:
             if tile.shape[2] <= 4:  # Color image with channels as last dimension
                 tile = tile.transpose(2, 0, 1)[None, :, :, :]  # B x C x H x W
             else:
-                # This should never happen with our fixed code, but just in case
                 raise ValueError(f"Unexpected tile shape: {tile.shape}. Expected 2D image.")
             
         return torch.from_numpy(tile)
 
     @torch.no_grad()
-    def _predict_batch(self, batch_tiles: list) -> list:
+    def _predict_batch(self, batch_tiles: List[torch.Tensor]) -> List[np.ndarray]:
         """Predict batch of tiles.
         
         Args:
@@ -409,14 +420,11 @@ class Predictor:
             List of prediction arrays
         """
         # Apply precision
-        dtype = torch.float32
-        if self.precision == 'bf16' and torch.cuda.is_bf16_supported():
-            dtype = torch.bfloat16
-        elif self.precision == '16' and torch.cuda.is_available():
-            dtype = torch.float16
-            
         # Stack batch and convert to appropriate precision
-        batch_tensor = torch.cat(batch_tiles, dim=0).to(device=self.device, dtype=dtype)
+        batch_tensor = torch.cat(batch_tiles, dim=0).to(
+            device=self.device,
+            dtype=self._get_inference_dtype(),
+        )
         
         # Get predictions
         pred_batch = self.model(batch_tensor)

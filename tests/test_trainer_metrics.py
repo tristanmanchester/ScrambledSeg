@@ -2,14 +2,10 @@
 
 from __future__ import annotations
 
-import sys
 from pathlib import Path
 
 import pytest
 
-PROJECT_ROOT = Path(__file__).resolve().parents[1]
-if str(PROJECT_ROOT) not in sys.path:
-    sys.path.insert(0, str(PROJECT_ROOT))
 
 torch = pytest.importorskip("torch")
 
@@ -53,6 +49,13 @@ class FakeMetric(torch.nn.Module):
 
     def reset(self) -> None:
         self.reset_calls += 1
+
+
+class ExplodingMetric(FakeMetric):
+    """Metric stub whose epoch-end compute fails."""
+
+    def compute(self) -> torch.Tensor:
+        raise RuntimeError("metric explosion")
 
 
 class FakeConfusionMatrix(torch.nn.Module):
@@ -176,3 +179,16 @@ def test_trainer_resets_phase_metrics_and_reports_validation_confusion_matrix(tm
     assert torch.equal(captured["saved"], trainer.val_confusion_matrix.matrix)
     assert trainer.val_confusion_matrix.reset_calls == 2
     assert trainer.validation_step_outputs == []
+
+
+def test_validation_epoch_end_propagates_metric_compute_failures(tmp_path: Path) -> None:
+    """Epoch-end validation metric errors should surface immediately."""
+
+    trainer = _build_trainer(tmp_path)
+    trainer.val_metrics = _build_metric_collection(2.0)
+    trainer.val_metrics["iou"] = ExplodingMetric(0.0)
+    trainer.val_confusion_matrix = FakeConfusionMatrix([[1, 0], [0, 1]])
+    trainer.validation_step_outputs = [{"val_loss": torch.tensor(1.5)}]
+
+    with pytest.raises(RuntimeError, match="metric explosion"):
+        trainer.on_validation_epoch_end()

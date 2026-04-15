@@ -3,13 +3,28 @@ import h5py
 import numpy as np
 from pathlib import Path
 import logging
-from typing import List, Tuple, Optional, Dict, NamedTuple, Union
+from typing import Dict, List, NamedTuple, Optional, Tuple, TypeAlias
 from tqdm import tqdm
 import tifffile
 import os
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
+if __package__ in {None, ""}:  # pragma: no cover - direct script execution fallback
+    import sys
+
+    project_root = Path(__file__).resolve().parents[2]
+    if str(project_root) not in sys.path:
+        sys.path.insert(0, str(project_root))
+    from scrambledSeg.axis import Axis, AxisPredictor
+else:
+    from ..axis import Axis, AxisPredictor
+
 logger = logging.getLogger(__name__)
+
+VolumePaths: TypeAlias = List[str]
+VolumePathPair: TypeAlias = Tuple[str, str]
+SplitRatios: TypeAlias = Dict[str, float]
+DEFAULT_SPLIT_RATIOS: SplitRatios = {"train": 0.8, "val": 0.1, "test": 0.1}
 
 class SliceInfo(NamedTuple):
     """Information about a slice's origin."""
@@ -59,134 +74,110 @@ def extract_tiles_from_slice(
         output_dir: Directory to save extracted tiles
         tile_size: Size of tiles (square)
         overlap: Overlap between adjacent tiles
-        
+
     Returns:
         List of SliceInfo objects for each extracted tile
     """
-    import sys
-    from pathlib import Path
-    # Add the project root to Python path
-    project_root = Path(__file__).parent.parent.parent
-    sys.path.insert(0, str(project_root))
-    from scrambledSeg.prediction.axis import AxisPredictor, Axis
-    
     base_name = Path(data_path).stem
     logger.info(f"Processing volume: {base_name}")
-    
+
     tile_info = []
     axis_handler = AxisPredictor()
-    
-    try:
-        # Load 3D volumes
-        data_volume = load_volume(data_path)
-        label_volume = load_volume(label_path)
-        
-        # Ensure both are 3D volumes
-        if data_volume.ndim != 3 or label_volume.ndim != 3:
-            raise ValueError(f"Expected 3D volumes, got data: {data_volume.ndim}D, label: {label_volume.ndim}D")
-        
-        # Verify shapes match
-        assert data_volume.shape == label_volume.shape, f"Data shape {data_volume.shape} != Label shape {label_volume.shape}"
-        
-        # Extract slices from all three axes
-        for axis in [Axis.XY, Axis.YZ, Axis.XZ]:
-            axis_name = axis.name.lower()
-            
-            # Get the number of slices for this axis
-            volume_shape = axis_handler.get_volume_shape(axis, data_volume.shape)
-            num_slices = volume_shape[0]
-            
-            for slice_idx in range(num_slices):
-                # Extract 2D slices from the volume
-                data_slice = axis_handler.get_slice(data_volume, axis, slice_idx)
-                label_slice = axis_handler.get_slice(label_volume, axis, slice_idx)
-                
-                # Verify shapes match
-                assert data_slice.shape == label_slice.shape, f"Data shape {data_slice.shape} != Label shape {label_slice.shape}"
-                
-                # Normalize data if needed
-                if data_slice.max() > 1.0:
-                    data_slice = data_slice.astype(np.float32) / 65535.0
-                
-                # Convert labels to uint8
-                label_slice = label_slice.astype(np.uint8)
-                
-                # Get dimensions
-                height, width = data_slice.shape
-                
-                # Calculate tile positions with overlap
-                stride = tile_size - overlap
-                tile_positions = []
-                
-                for y in range(0, height - tile_size + 1, stride):
-                    for x in range(0, width - tile_size + 1, stride):
-                        tile_positions.append((y, x))
-                
-                # Add edge tiles if needed
-                if height % stride != 0:
-                    y = max(0, height - tile_size)
-                    for x in range(0, width - tile_size + 1, stride):
-                        if (y, x) not in tile_positions:
-                            tile_positions.append((y, x))
-                            
-                if width % stride != 0:
-                    x = max(0, width - tile_size)
-                    for y in range(0, height - tile_size + 1, stride):
-                        if (y, x) not in tile_positions:
-                            tile_positions.append((y, x))
-                
-                # Add the bottom-right corner tile if needed
-                if height > tile_size and width > tile_size:
-                    corner = (max(0, height - tile_size), max(0, width - tile_size))
-                    if corner not in tile_positions:
-                        tile_positions.append(corner)
-                
-                # Extract and save tiles
-                for tile_idx, (y, x) in enumerate(tile_positions):
-                    # Extract tile
-                    data_tile = data_slice[y:y+tile_size, x:x+tile_size]
-                    label_tile = label_slice[y:y+tile_size, x:x+tile_size]
-                    
-                    # Skip tiles that are too small (shouldn't happen with our logic above)
-                    if data_tile.shape[0] < tile_size or data_tile.shape[1] < tile_size:
-                        continue
-                        
-                    # Add channel dimension
-                    data_tile = np.expand_dims(data_tile, 0)
-                    label_tile = np.expand_dims(label_tile, 0)
-                    
-                    # Create unique filename including axis and slice info
-                    global_tile_idx = len(tile_info)
-                    tile_name = f"{base_name}_{axis_name}_slice{slice_idx:03d}_tile{tile_idx:03d}"
-                    data_filename = output_dir / 'data' / f"{tile_name}.tif"
-                    label_filename = output_dir / 'labels' / f"{tile_name}.tif"
 
-                    os.makedirs(data_filename.parent, exist_ok=True)
-                    os.makedirs(label_filename.parent, exist_ok=True)
-                    
-                    tifffile.imwrite(str(data_filename), data_tile)
-                    tifffile.imwrite(str(label_filename), label_tile)
-                    
-                    tile_info.append(SliceInfo(base_name, f"{axis_name}_slice{slice_idx:03d}", tile_idx))
-                
-    except Exception as e:
-        logger.error(f"Error processing slice {base_name}: {str(e)}")
-        raise
-        
+    # Load 3D volumes
+    data_volume = load_volume(data_path)
+    label_volume = load_volume(label_path)
+    
+    # Ensure both are 3D volumes
+    if data_volume.ndim != 3 or label_volume.ndim != 3:
+        raise ValueError(f"Expected 3D volumes, got data: {data_volume.ndim}D, label: {label_volume.ndim}D")
+
+    # Verify shapes match
+    if data_volume.shape != label_volume.shape:
+        raise ValueError(f"Data shape {data_volume.shape} != Label shape {label_volume.shape}")
+
+    # Extract slices from all three axes
+    for axis in [Axis.XY, Axis.YZ, Axis.XZ]:
+        axis_name = axis.name.lower()
+
+        # Get the number of slices for this axis
+        volume_shape = axis_handler.get_volume_shape(axis, data_volume.shape)
+        num_slices = volume_shape[0]
+
+        for slice_idx in range(num_slices):
+            # Extract 2D slices from the volume
+            data_slice = axis_handler.get_slice(data_volume, axis, slice_idx)
+            label_slice = axis_handler.get_slice(label_volume, axis, slice_idx)
+
+            # Verify shapes match
+            if data_slice.shape != label_slice.shape:
+                raise ValueError(f"Data shape {data_slice.shape} != Label shape {label_slice.shape}")
+
+            # Normalize data if needed
+            if data_slice.max() > 1.0:
+                data_slice = data_slice.astype(np.float32) / 65535.0
+
+            # Convert labels to uint8
+            label_slice = label_slice.astype(np.uint8)
+
+            # Get dimensions
+            height, width = data_slice.shape
+
+            # Calculate tile positions with overlap
+            stride = tile_size - overlap
+            tile_positions = []
+
+            for y in range(0, height - tile_size + 1, stride):
+                for x in range(0, width - tile_size + 1, stride):
+                    tile_positions.append((y, x))
+
+            # Add edge tiles if needed
+            if height % stride != 0:
+                y = max(0, height - tile_size)
+                for x in range(0, width - tile_size + 1, stride):
+                    if (y, x) not in tile_positions:
+                        tile_positions.append((y, x))
+
+            if width % stride != 0:
+                x = max(0, width - tile_size)
+                for y in range(0, height - tile_size + 1, stride):
+                    if (y, x) not in tile_positions:
+                        tile_positions.append((y, x))
+
+            if height > tile_size and width > tile_size:
+                corner = (max(0, height - tile_size), max(0, width - tile_size))
+                if corner not in tile_positions:
+                    tile_positions.append(corner)
+
+            for tile_idx, (y, x) in enumerate(tile_positions):
+                data_tile = data_slice[y:y+tile_size, x:x+tile_size]
+                label_tile = label_slice[y:y+tile_size, x:x+tile_size]
+
+                if data_tile.shape[0] < tile_size or data_tile.shape[1] < tile_size:
+                    continue
+
+                data_tile = np.expand_dims(data_tile, 0)
+                label_tile = np.expand_dims(label_tile, 0)
+
+                tile_name = f"{base_name}_{axis_name}_slice{slice_idx:03d}_tile{tile_idx:03d}"
+                data_filename = output_dir / 'data' / f"{tile_name}.tif"
+                label_filename = output_dir / 'labels' / f"{tile_name}.tif"
+
+                os.makedirs(data_filename.parent, exist_ok=True)
+                os.makedirs(label_filename.parent, exist_ok=True)
+
+                tifffile.imwrite(str(data_filename), data_tile)
+                tifffile.imwrite(str(label_filename), label_tile)
+
+                tile_info.append(SliceInfo(base_name, f"{axis_name}_slice{slice_idx:03d}", tile_idx))
+
     return tile_info
 
-def calculate_total_tiles(data_paths: List[str], tile_size: int = 256, overlap: int = 64) -> int:
+def calculate_total_tiles(data_paths: VolumePaths, tile_size: int = 256, overlap: int = 64) -> int:
     """Calculate approximate total number of tiles across all slices from all axes."""
-    import sys
-    from pathlib import Path
-    # Add the project root to Python path
-    project_root = Path(__file__).parent.parent.parent
-    sys.path.insert(0, str(project_root))
-    from scrambledSeg.prediction.axis import AxisPredictor, Axis
-    
     total = 0
     axis_handler = AxisPredictor()
-    
+
     for data_path in data_paths:
         # Load volume
         volume_data = load_volume(data_path)
@@ -223,15 +214,17 @@ def _process_slice(args):
     return (data_path, label_path, slice_info)
 
 def create_datasets(
-    data_paths: List[str],
-    label_paths: List[str],
+    data_paths: VolumePaths,
+    label_paths: VolumePaths,
     output_dir: Path,
-    split_ratios: Dict[str, float] = {"train": 0.8, "val": 0.1, "test": 0.1},
+    split_ratios: Optional[SplitRatios] = None,
     random_seed: int = 42,
     tile_size: int = 256,
     overlap: int = 64,
 ) -> None:
     """Create datasets with correct pre-allocated sizes, using 24 threads in parallel."""
+    split_ratios = DEFAULT_SPLIT_RATIOS.copy() if split_ratios is None else split_ratios
+
     # Validate split ratios
     if abs(sum(split_ratios.values()) - 1.0) > 1e-6:
         raise ValueError("Split ratios must sum to 1")
@@ -288,12 +281,15 @@ def create_datasets(
                 os.rename(data_filename, new_data_filename)
                 os.rename(label_filename, new_label_filename)
             else:
-                logger.warning(f"Missing files: {data_filename} or {label_filename}")
+                raise FileNotFoundError(
+                    "Expected extracted tile files before dataset split assignment, but missing "
+                    f"{data_filename} or {label_filename}."
+                )
 
     logger.info("Dataset creation complete!")
 
 
-def find_matching_volume_pairs(data_dir: Path, label_dir: Path) -> List[Tuple[str, str]]:
+def find_matching_volume_pairs(data_dir: Path, label_dir: Path) -> List[VolumePathPair]:
     """Find matching volume files (H5, TIFF, TIF) in data and label directories.
     
     Handles both:
