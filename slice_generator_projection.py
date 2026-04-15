@@ -38,9 +38,9 @@ from scipy.ndimage import gaussian_filter1d # For 1D blur in sinogram
 
 # --- Constants for Labels ---
 LABEL_OUT_OF_RECONSTRUCTION = 0
-LABEL_BACKGROUND = 0
-LABEL_ELECTROLYTE = 1
-LABEL_CATHODE = 2
+LABEL_BACKGROUND = 1
+LABEL_ELECTROLYTE = 2
+LABEL_CATHODE = 3
 # --------------------------
 
 # --- Dataclasses for Parameter Structure (Type Hinting & Organization) ---
