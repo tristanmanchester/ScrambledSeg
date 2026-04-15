@@ -105,6 +105,16 @@ class Predictor:
         # Define rotations for 12-axis prediction
         self.rotations = [0, 90, 180, 270]
 
+    @staticmethod
+    def _tensor_to_numpy(tensor: torch.Tensor) -> np.ndarray:
+        """Convert a tensor to a NumPy array without relying on PyTorch's NumPy bridge."""
+        detached = tensor.detach().cpu()
+        if detached.is_floating_point():
+            return np.asarray(detached.tolist(), dtype=np.float32)
+        if detached.dtype == torch.bool:
+            return np.asarray(detached.tolist(), dtype=np.bool_)
+        return np.asarray(detached.tolist(), dtype=np.int64)
+
     def predict(
         self,
         input_path: Union[str, Path],
@@ -144,9 +154,8 @@ class Predictor:
         # Load volume
         volume = self.data_handler.load_h5(input_path, dataset_path)
         
-        # Create output volume
-        output = np.zeros_like(volume, dtype=np.float32)
-        counts = np.zeros_like(volume, dtype=np.float32)
+        output = None
+        counts = None
         
         # Get axes to process
         axes = self._get_prediction_axes()
@@ -166,11 +175,14 @@ class Predictor:
                 axis_pred, axis_counts = self._predict_axis(volume, axis, angle)
                 
                 # Add to ensemble
+                if output is None:
+                    output = np.zeros_like(axis_pred, dtype=np.float32)
+                    counts = np.zeros_like(axis_counts, dtype=np.float32)
                 output += axis_pred
                 counts += axis_counts
         
         # Average predictions
-        output = np.divide(output, counts, where=counts > 0)
+        output = np.divide(output, counts, out=np.zeros_like(output), where=counts > 0)
         
         # Convert to uint16 and save
         self.data_handler.save_h5(output, output_path, dataset_path)
@@ -280,9 +292,8 @@ class Predictor:
         shape = self.axis_handler.get_volume_shape(axis, volume.shape)
         depth = shape[0]
         
-        # Create output arrays
-        output = np.zeros_like(volume, dtype=np.float32)
-        counts = np.zeros_like(volume, dtype=np.float32)
+        output = None
+        counts = None
         
         # Process in batches
         for start_idx in tqdm(range(0, depth, self.batch_size)):
@@ -316,17 +327,21 @@ class Predictor:
             if pred_batch.size(1) > 1:  # Multi-class case
                 # Apply softmax to get class probabilities
                 pred_batch = torch.softmax(pred_batch, dim=1)
+
+                if output is None:
+                    output = np.zeros((volume.shape[0], pred_batch.size(1), volume.shape[1], volume.shape[2]), dtype=np.float32)
+                    counts = np.zeros_like(output, dtype=np.float32)
                 
                 # Process each slice in batch
                 for batch_idx, idx in enumerate(range(start_idx, end_idx)):
                     pred_slice = pred_batch[batch_idx]
                     
                     # Rotate back if needed
-                    pred_np = pred_slice.cpu().numpy()
+                    pred_np = self._tensor_to_numpy(pred_slice)
                     if rotation_angle != 0:
                         # For multi-class, rotate each channel separately
                         for c in range(pred_np.shape[0]):
-                            pred_np[c] = self.axis_handler.rotate_slice(pred_np[c:c+1], -rotation_angle)[0]
+                            pred_np[c] = self.axis_handler.rotate_slice(pred_np[c], -rotation_angle)
                     
                     # Add to output - for each class
                     self.axis_handler.set_slice(output, axis, idx, pred_np, out=output)
@@ -334,13 +349,17 @@ class Predictor:
             else:
                 # Binary case - use sigmoid
                 pred_batch = torch.sigmoid(pred_batch)
+
+                if output is None:
+                    output = np.zeros_like(volume, dtype=np.float32)
+                    counts = np.zeros_like(volume, dtype=np.float32)
                 
                 # Process each slice in batch
                 for batch_idx, idx in enumerate(range(start_idx, end_idx)):
                     pred_slice = pred_batch[batch_idx]
                     
                     # Rotate back if needed
-                    pred_np = pred_slice.cpu().numpy()
+                    pred_np = self._tensor_to_numpy(pred_slice)
                     if rotation_angle != 0:
                         pred_np = self.axis_handler.rotate_slice(pred_np, -rotation_angle)
                     
@@ -413,7 +432,7 @@ class Predictor:
             # Convert to numpy
             pred_tiles = []
             for pred in pred_class:
-                pred_np = pred.cpu().numpy()
+                pred_np = self._tensor_to_numpy(pred)
                 pred_tiles.append(pred_np)
         else:
             # Binary case - use sigmoid
@@ -422,7 +441,7 @@ class Predictor:
             # Convert to numpy
             pred_tiles = []
             for pred in pred_batch:
-                pred_np = pred.squeeze().cpu().numpy()
+                pred_np = self._tensor_to_numpy(pred.squeeze())
                 pred_tiles.append(pred_np)
             
         return pred_tiles

@@ -31,6 +31,20 @@ class AxisPredictor:
             Axis.YZ: (2, 0, 1),
             Axis.XZ: (0, 2, 1),
         }
+
+    def _get_view_permutation(self, axis: Axis, ndim: int) -> Tuple[int, ...]:
+        """Return the permutation needed for a given array dimensionality."""
+        if ndim == 3:
+            return self._axis_permutations[axis]
+        if ndim == 4:
+            spatial_axes = [0, 2, 3]
+            spatial_permutation = [spatial_axes[idx] for idx in self._axis_permutations[axis]]
+            return (spatial_permutation[0], 1, spatial_permutation[1], spatial_permutation[2])
+        raise ValueError(f"Unsupported volume ndim {ndim}. Expected 3 or 4.")
+
+    def _get_view(self, volume: np.ndarray, axis: Axis) -> np.ndarray:
+        """Return the axis-aligned view for 3D or 4D volumes."""
+        return np.transpose(volume, self._get_view_permutation(axis, volume.ndim))
     
     def get_slice(self, volume: np.ndarray, axis: Axis, idx: int) -> np.ndarray:
         """Extract a 2D slice from the volume along specified axis.
@@ -45,12 +59,10 @@ class AxisPredictor:
         """
         if not isinstance(axis, Axis):
             raise ValueError(f"Invalid axis: {axis}. Must be an Axis enum.")
-        
-        if idx < 0 or idx >= volume.shape[0]:
-            raise ValueError(f"Invalid index {idx} for axis {axis}. Must be between 0 and {volume.shape[0]}")
-        
-        # Permute axes to get desired view
-        volume_view = np.transpose(volume, self._axis_permutations[axis])
+
+        volume_view = self._get_view(volume, axis)
+        if idx < 0 or idx >= volume_view.shape[0]:
+            raise ValueError(f"Invalid index {idx} for axis {axis}. Must be between 0 and {volume_view.shape[0] - 1}")
         
         # Extract slice
         slice_data = volume_view[idx]
@@ -73,23 +85,19 @@ class AxisPredictor:
         """
         if not isinstance(axis, Axis):
             raise ValueError(f"Invalid axis: {axis}. Must be an Axis enum.")
-            
-        if idx < 0 or idx >= volume.shape[0]:
-            raise ValueError(f"Invalid index {idx} for axis {axis}")
         
         # Create output array if needed
         if out is None:
             out = volume.copy()
         
         # Permute axes to get desired view
-        out_view = np.transpose(out, self._axis_permutations[axis])
+        out_view = self._get_view(out, axis)
+        if idx < 0 or idx >= out_view.shape[0]:
+            raise ValueError(f"Invalid index {idx} for axis {axis}. Must be between 0 and {out_view.shape[0] - 1}")
         
         # Set slice
         out_view[idx] = slice_data
-        
-        # Permute back to original orientation
-        out = np.transpose(out_view, self._inverse_permutations[axis])
-        
+
         return out
     
     def rotate_slice(self, slice_data: np.ndarray, angle: float, 
@@ -125,7 +133,12 @@ class AxisPredictor:
         Returns:
             Shape tuple for the specified axis view
         """
-        return tuple(np.array(shape)[list(self._axis_permutations[axis])])
+        if len(shape) == 3:
+            return tuple(np.array(shape)[list(self._axis_permutations[axis])])
+        if len(shape) == 4:
+            permutation = self._get_view_permutation(axis, len(shape))
+            return tuple(np.array(shape)[list(permutation)])
+        raise ValueError(f"Unsupported shape {shape}. Expected 3D or 4D volume.")
     
     @staticmethod
     def create_empty_volume(shape: Tuple[int, ...], dtype: np.dtype) -> np.ndarray:
