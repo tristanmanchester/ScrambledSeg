@@ -31,6 +31,17 @@ class VisualizationCallback(pl.Callback):
 
     SCALAR_METRICS = ("loss", "iou", "precision", "recall", "f1", "dice", "specificity")
     PER_CLASS_METRICS = ("iou", "precision", "recall", "f1")
+    PROGRESS_METRICS = (
+        "batch_time",
+        "samples_per_second",
+        "learning_rate",
+        "gradient_norm",
+        "avg_gradient_norm",
+        "gpu_memory_used_gb",
+        "gpu_memory_total_gb",
+        "cpu_percent",
+        "total_samples_seen",
+    )
 
     def __init__(
         self,
@@ -39,7 +50,6 @@ class VisualizationCallback(pl.Callback):
         num_samples: int = 4,
         min_coverage: float = 0.05,
         dpi: int = 300,
-        enable_memory_tracking: bool = False,
         visualizer: Optional[SegmentationVisualizer] = None,
         num_classes: int = 2,
     ):
@@ -101,6 +111,8 @@ class VisualizationCallback(pl.Callback):
                 columns.extend(
                     [f"train_{metric}_class_{class_idx}", f"val_{metric}_class_{class_idx}"]
                 )
+
+        columns.extend(f"train_{metric}" for metric in self.PROGRESS_METRICS)
 
         return columns
 
@@ -196,6 +208,11 @@ class VisualizationCallback(pl.Callback):
 
                 for class_idx, class_value in enumerate(values):
                     flattened[f"{split}_{metric_name}_class_{class_idx}"] = class_value
+
+        if split == "train" and isinstance(metrics.get("training_metrics"), dict):
+            for metric_name, metric_value in metrics["training_metrics"].items():
+                if metric_name in self.PROGRESS_METRICS:
+                    flattened[f"train_{metric_name}"] = metric_value
 
         return flattened
 

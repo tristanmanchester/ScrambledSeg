@@ -2,6 +2,7 @@
 
 import logging
 import time
+from dataclasses import asdict
 from datetime import datetime
 from pathlib import Path
 from typing import Optional, TypedDict
@@ -18,25 +19,9 @@ from torch.utils.data import DataLoader
 
 from ..visualization.callbacks import VisualizationCallback
 from ..visualization.core import SegmentationVisualizer
+from .config import ModelConfigSnapshot, PredictionParams, VisualizationConfig
 
 logger = logging.getLogger(__name__)
-
-
-class PredictionParams(TypedDict, total=False):
-    """Cleanup configuration used when converting logits into labels."""
-
-    enable_cleanup: bool
-    cleanup_kernel_size: int
-    cleanup_threshold: float
-    min_hole_size_factor: int
-
-
-class VisualizationConfig(TypedDict, total=False):
-    """Visualization callback settings used by the trainer."""
-
-    num_samples: int
-    min_coverage: float
-    dpi: int
 
 
 class OutputStats(TypedDict):
@@ -123,8 +108,7 @@ class SegformerTrainer(pl.LightningModule):
         optimizer: Optimizer,
         scheduler: Optional[_LRScheduler] = None,
         threshold_params: PredictionParams | None = None,
-        vis_dir: str = "visualizations",
-        enable_memory_tracking: bool = False,
+        vis_dir: str | None = None,
         enable_adaptive_batch_size: bool = False,
         target_gpu_util: float = 0.9,
         min_batch_size: int = 1,
@@ -135,6 +119,7 @@ class SegformerTrainer(pl.LightningModule):
         log_dir: str = "logs",
         test_mode: bool = False,
         num_classes: int = 2,
+        model_config: ModelConfigSnapshot | None = None,
     ):
         """Initialize trainer."""
         super().__init__()
@@ -146,7 +131,6 @@ class SegformerTrainer(pl.LightningModule):
         self._val_dataloader = val_dataloader
         self._optimizer = optimizer
         self._scheduler = scheduler
-        self.enable_memory_tracking = enable_memory_tracking
         self.enable_adaptive_batch_size = enable_adaptive_batch_size
         self.target_gpu_util = target_gpu_util
         self.min_batch_size = min_batch_size
@@ -155,37 +139,33 @@ class SegformerTrainer(pl.LightningModule):
         self.gradient_clip_val = gradient_clip_val
         self.test_mode = test_mode
         self.validation_step_outputs: list[ValidationLossRecord] = []
-
-        self.prediction_params: PredictionParams = threshold_params or {
-            "enable_cleanup": True,
-            "cleanup_kernel_size": 3,
-            "cleanup_threshold": 5,
-            "min_hole_size_factor": 64,
-        }
+        self.model_config = model_config or ModelConfigSnapshot(num_classes=num_classes)
+        self.prediction_params = threshold_params or PredictionParams()
 
         self.log_dir = Path(log_dir)
         if test_mode:
             self.log_dir = self.log_dir / "test"
         self.log_dir.mkdir(parents=True, exist_ok=True)
 
-        self.vis_dir = self.log_dir / "plots"
+        self.vis_dir = Path(vis_dir) if vis_dir else self.log_dir / "plots"
         self.metrics_dir = self.log_dir / "metrics"
         self.vis_dir.mkdir(parents=True, exist_ok=True)
         self.metrics_dir.mkdir(parents=True, exist_ok=True)
 
-        vis_config: VisualizationConfig = visualization or {}
+        vis_config = visualization or VisualizationConfig()
         self.vis_callback = VisualizationCallback(
             output_dir=str(self.vis_dir),
             metrics_dir=str(self.metrics_dir),
-            num_samples=vis_config.get("num_samples", 4),
-            min_coverage=vis_config.get("min_coverage", 0.05),
-            dpi=vis_config.get("dpi", 300),
-            enable_memory_tracking=enable_memory_tracking,
+            num_samples=vis_config.num_samples,
+            min_coverage=vis_config.min_coverage,
+            dpi=vis_config.dpi,
             num_classes=num_classes,
             visualizer=SegmentationVisualizer(
                 metrics_file=str(self.metrics_dir / "metrics.csv"),
-                min_coverage=vis_config.get("min_coverage", 0.05),
-                dpi=vis_config.get("dpi", 300),
+                min_coverage=vis_config.min_coverage,
+                style=vis_config.style,
+                dpi=vis_config.dpi,
+                cmap=vis_config.cmap,
             ),
         )
 
@@ -203,7 +183,6 @@ class SegformerTrainer(pl.LightningModule):
         if not test_mode:
             logger.info("Saving hyperparameters...")
             save_params = {
-                "enable_memory_tracking": enable_memory_tracking,
                 "enable_adaptive_batch_size": enable_adaptive_batch_size,
                 "target_gpu_util": target_gpu_util,
                 "min_batch_size": min_batch_size,
@@ -211,6 +190,8 @@ class SegformerTrainer(pl.LightningModule):
                 "num_epochs": num_epochs,
                 "gradient_clip_val": gradient_clip_val,
                 "test_mode": test_mode,
+                "model_config": asdict(self.model_config),
+                "vis_dir": str(self.vis_dir),
             }
             self.save_hyperparameters(save_params)
         else:
@@ -305,9 +286,9 @@ class SegformerTrainer(pl.LightningModule):
         num_classes = predictions.size(1)
         pred_one_hot = F.one_hot(pred_classes, num_classes).permute(0, 3, 1, 2).float()
 
-        if self.prediction_params.get("enable_cleanup", True):
-            kernel_size = self.prediction_params.get("cleanup_kernel_size", 3)
-            cleanup_threshold = self.prediction_params.get("cleanup_threshold", 5)
+        if self.prediction_params.enable_cleanup:
+            kernel_size = self.prediction_params.cleanup_kernel_size
+            cleanup_threshold = self.prediction_params.cleanup_threshold
 
             kernel_size = max(3, kernel_size + (kernel_size + 1) % 2)
             pad_size = kernel_size // 2

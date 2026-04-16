@@ -162,7 +162,7 @@ uv run scrambledseg-predict \
     --mode THREE_AXIS \
     --output_dir predictions \
     --batch_size 8 \
-    --data_path /data
+    --dataset-path /data
 ```
 
 Available prediction modes:
@@ -204,20 +204,25 @@ plt.savefig('multi_phase_result.png')
 ```
 ScrambledSeg/
 ├── configs/                 # Experiment configuration files
-├── .python-version
-├── scrambledSeg/
-├── pyproject.toml           # Project metadata, dependencies, and tool config
-├── uv.lock                  # Reproducible uv lockfile
-├── predict_cli.py           # Compatibility wrapper for the packaged prediction CLI
+├── scrambledSeg/            # Python package root
 │   ├── analysis/            # Training analysis utilities
 │   ├── data/                # Dataset definitions and preprocessing helpers
+│   ├── generation/          # Synthetic slice generation utilities
 │   ├── losses/              # Loss functions and factory utilities
 │   ├── models/              # SegFormer customisations
-│   ├── prediction/          # Inference utilities and ensembles
+│   ├── prediction/          # Inference utilities, TIFF/H5 handling, and CLI
 │   ├── training/            # Training loop, callbacks, and progress reporting
-│   └── visualization/       # Callbacks and helpers for qualitative outputs
-├── slice_generator_projection.py
-└── potential_improvements.md
+│   │   ├── rich_progress.py # Rich progress bar integration
+│   │   ├── train.py         # Training CLI entrypoint and orchestration
+│   │   ├── trainer.py       # Lightning module and optimization logic
+│   │   └── transforms.py    # Training augmentation builders
+│   ├── utils/               # Shared utility helpers
+│   ├── visualization/       # Callbacks and helpers for qualitative outputs
+│   ├── axis.py              # Canonical axis and slice-handling utilities
+├── tests/                   # Automated regression tests
+├── pyproject.toml           # Project metadata, dependencies, and tool config
+├── uv.lock                  # Reproducible uv lockfile
+└── potential_improvements.md # Scratch notes and future ideas
 ```
 
 ## Testing

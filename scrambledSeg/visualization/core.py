@@ -1,20 +1,14 @@
 """Core visualization module for segmentation results and training metrics."""
 
-import matplotlib
-import numpy as np
-import torch
-
-matplotlib.use("Agg")
-import matplotlib.pyplot as plt
-
-plt.style.use("seaborn-v0_8-bright")
 import logging
 import os
 from pathlib import Path
 from typing import List, Optional, Union
 
+import matplotlib.pyplot as plt
+import numpy as np
 import pandas as pd
-import seaborn as sns
+import torch
 import torch.nn.functional as F
 
 logger = logging.getLogger(__name__)
@@ -55,12 +49,9 @@ class SegmentationVisualizer:
         self.min_coverage = min_coverage
         self.cmap = cmap
         self.mask_cmap = cmap
+        self.style = "seaborn-v0_8-bright" if style == "seaborn" else style
 
-        # Set style with seaborn
-        if style == "seaborn":
-            sns.set_theme()
-        else:
-            plt.style.use(style)
+        plt.style.use(self.style)
 
         # Initialize metrics history
         self.metrics_history = {}
@@ -127,6 +118,38 @@ class SegmentationVisualizer:
 
         return df
 
+    @staticmethod
+    def _plot_efficiency_panel(
+        ax: plt.Axes,
+        df: pd.DataFrame,
+        columns: list[tuple[str, str]],
+        *,
+        title: str,
+        ylabel: str,
+        fallback_text: str,
+    ) -> None:
+        """Plot any available efficiency series or show a clear fallback message."""
+
+        plotted = False
+        for column, label in columns:
+            if column in df.columns and not df[column].isna().all():
+                series = df[["step", column]].dropna()
+                if not series.empty:
+                    ax.plot(series["step"], series[column], label=label, linewidth=2)
+                    plotted = True
+
+        if plotted:
+            ax.set_xlabel("Step")
+            ax.set_ylabel(ylabel)
+            ax.set_title(title)
+            ax.grid(True, alpha=0.3)
+            if len(columns) > 1:
+                ax.legend(loc="best")
+            return
+
+        ax.text(0.5, 0.5, fallback_text, ha="center", va="center", transform=ax.transAxes)
+        ax.set_title(title)
+
     def find_interesting_slices(self, masks, k: int = 4) -> List[int]:
         """Find k most interesting slices based on mask coverage."""
         all_coverages = [(i, self._mask_coverage(masks[i])) for i in range(len(masks))]
@@ -155,7 +178,6 @@ class SegmentationVisualizer:
         prediction: Union[torch.Tensor, np.ndarray],
         save_path: Optional[Path] = None,
         show_colorbar: bool = True,
-        threshold: float = 0.5,
         class_values: Optional[np.ndarray] = None,
     ) -> Optional[plt.Figure]:
         """Create visualization grid showing input, target, continuous predictions, sigmoid outputs, binary predictions, and difference map."""
@@ -433,7 +455,7 @@ class SegmentationVisualizer:
         plt.tight_layout()
 
         if save_path:
-            plt.savefig(save_path, dpi=self.dpi, bbox_inches="tight")
+            plt.savefig(save_path, dpi=dpi or self.dpi, bbox_inches="tight")
             plt.close(fig)
             return None
         return fig
@@ -713,25 +735,60 @@ class SegmentationVisualizer:
     def plot_training_efficiency(
         self, save_path: Optional[str] = None, dpi: Optional[int] = None
     ) -> Optional[plt.Figure]:
-        """Plot training efficiency metrics like learning rate, gradient norms, timing."""
-        if not os.path.exists(self.metrics_file):
-            logger.warning("No metrics file found for efficiency plotting.")
+        """Plot recorded training-runtime metrics from the metrics CSV."""
+
+        df = self._load_metrics_dataframe(
+            missing_message="No metrics file found for efficiency plotting.",
+            insufficient_message="Not enough metrics data points for efficiency plotting.",
+        )
+        if df is None:
             return None
 
         fig, ((ax1, ax2), (ax3, ax4)) = plt.subplots(2, 2, figsize=(16, 12))
+        fallback_text = "Progress metrics unavailable."
 
-        placeholder_text = "Progress metrics unavailable."
-        ax1.text(0.5, 0.5, placeholder_text, ha="center", va="center", transform=ax1.transAxes)
-        ax1.set_title("Learning Rate Schedule")
-
-        ax2.text(0.5, 0.5, placeholder_text, ha="center", va="center", transform=ax2.transAxes)
-        ax2.set_title("Gradient Statistics")
-
-        ax3.text(0.5, 0.5, placeholder_text, ha="center", va="center", transform=ax3.transAxes)
-        ax3.set_title("Samples per Second")
-
-        ax4.text(0.5, 0.5, placeholder_text, ha="center", va="center", transform=ax4.transAxes)
-        ax4.set_title("GPU Memory Usage")
+        self._plot_efficiency_panel(
+            ax1,
+            df,
+            [("train_learning_rate", "Learning Rate")],
+            title="Learning Rate Schedule",
+            ylabel="Learning Rate",
+            fallback_text=fallback_text,
+        )
+        self._plot_efficiency_panel(
+            ax2,
+            df,
+            [
+                ("train_gradient_norm", "Gradient Norm"),
+                ("train_avg_gradient_norm", "Average Gradient Norm"),
+            ],
+            title="Gradient Statistics",
+            ylabel="Norm",
+            fallback_text=fallback_text,
+        )
+        self._plot_efficiency_panel(
+            ax3,
+            df,
+            [
+                ("train_samples_per_second", "Samples / Second"),
+                ("train_batch_time", "Batch Time (s)"),
+            ],
+            title="Training Throughput",
+            ylabel="Rate / Time",
+            fallback_text=fallback_text,
+        )
+        self._plot_efficiency_panel(
+            ax4,
+            df,
+            [
+                ("train_gpu_memory_used_gb", "GPU Memory Used (GB)"),
+                ("train_gpu_memory_total_gb", "GPU Memory Reserved (GB)"),
+                ("train_cpu_percent", "CPU Percent"),
+            ],
+            title="Resource Usage",
+            ylabel="Usage",
+            fallback_text=fallback_text,
+        )
 
         plt.tight_layout()
 

@@ -8,107 +8,83 @@ import h5py
 import numpy as np
 import torch
 
+from .errors import PredictionDataAccessError
 from .types import NormalizationRange, PathLike
 
 logger = logging.getLogger(__name__)
+DEFAULT_DATASET_PATH = "/data"
 
 
 class TomoDataset:
-    """Handles loading, saving, and preprocessing of tomographic data."""
+    """Load, save, and normalize tomographic prediction data."""
 
     def __init__(self, normalize_range: Optional[NormalizationRange] = None):
-        """Initialize dataset handler.
-
-        Args:
-            normalize_range: Optional tuple of (min, max) values to use for normalization.
-                           If None, will use the min/max of each slice.
-        """
+        """Create a data handler with an optional fixed normalization range."""
         self.normalize_range = normalize_range
 
-    def load_h5(self, path: PathLike, dataset_path: str = "/data") -> np.ndarray:
-        """Load uint16 data from h5 file.
-
-        Args:
-            path: Path to h5 file
-            dataset_path: Path to dataset within h5 file
-
-        Returns:
-            numpy array of shape (D, H, W) with uint16 dtype
-        """
-        logger.info(f"Loading h5 file: {path}")
+    def load_h5(self, path: PathLike, dataset_path: str = DEFAULT_DATASET_PATH) -> np.ndarray:
+        """Load a volume from an H5 dataset."""
+        logger.debug("Loading h5 file %s from dataset %s", path, dataset_path)
         with h5py.File(path, "r") as f:
             if dataset_path not in f:
-                raise ValueError(f"Dataset {dataset_path} not found in {path}")
+                raise PredictionDataAccessError(f"Dataset {dataset_path} not found in {path}")
             data = f[dataset_path][:]
 
         if data.dtype != np.uint16:
-            logger.warning(f"Expected uint16 data, got {data.dtype}. Converting...")
+            logger.warning("Expected uint16 data, got %s. Converting.", data.dtype)
             data = data.astype(np.uint16)
 
-        logger.info(f"Loaded volume of shape {data.shape} and dtype {data.dtype}")
-        logger.info(f"Value range: [{data.min()}, {data.max()}]")
+        logger.debug(
+            "Loaded volume with shape %s, dtype %s, range [%s, %s]",
+            data.shape,
+            data.dtype,
+            data.min(),
+            data.max(),
+        )
         return data
 
-    def save_h5(self, data: np.ndarray, path: PathLike, dataset_path: str = "/data") -> None:
-        """Save predictions to h5 file, handling both binary and multi-class data.
+    def save_h5(
+        self,
+        data: np.ndarray,
+        path: PathLike,
+        dataset_path: str = DEFAULT_DATASET_PATH,
+    ) -> None:
+        """Save prediction output to an H5 dataset."""
+        logger.debug("Saving h5 file %s to dataset %s", path, dataset_path)
+        output, dtype = self._prepare_h5_output(data)
 
-        Args:
-            data: numpy array to save
-            path: Path to h5 file
-            dataset_path: Path to dataset within h5 file
-        """
-        logger.info(f"Saving predictions to {path}")
+        Path(path).parent.mkdir(parents=True, exist_ok=True)
+        with h5py.File(path, "w") as f:
+            f.create_dataset(dataset_path, data=output, dtype=dtype)
 
-        # Check if this is multi-class data (multiple channels in axis 1)
-        is_multi_channel = data.ndim > 3 and data.shape[1] > 1
+        logger.debug(
+            "Saved volume with shape %s, dtype %s, range [%s, %s]",
+            output.shape,
+            output.dtype,
+            output.min(),
+            output.max(),
+        )
 
-        if is_multi_channel:
-            # Multi-class data - get class indices using argmax
-            logger.info(f"Detected multi-class data with {data.shape[1]} classes")
-            # If shape is (B, C, H, W), first check if B is 1, then apply argmax along C
-            if data.ndim == 4 and data.shape[0] == 1:
-                # Remove batch dimension first
-                data = data[0]
-                # Apply argmax along channel dimension (axis 0)
-                data = np.argmax(data, axis=0).astype(np.uint8)
-            elif data.ndim == 4:
-                # Apply argmax along channel dimension (axis 1)
-                data = np.argmax(data, axis=1).astype(np.uint8)
+    def _prepare_h5_output(self, data: np.ndarray) -> tuple[np.ndarray, np.dtype[np.generic]]:
+        """Normalize output arrays for H5 persistence."""
+        if data.ndim == 4 and data.shape[1] > 1:
+            if data.shape[0] == 1:
+                output = np.argmax(data[0], axis=0)
+            else:
+                output = np.argmax(data, axis=1)
+            return output.astype(np.uint8), np.dtype(np.uint8)
 
-            logger.info(f"Converted to class indices with shape {data.shape}")
-            # Create parent directory if needed
-            Path(path).parent.mkdir(parents=True, exist_ok=True)
+        if data.dtype != np.uint16:
+            logger.warning("Converting %s predictions to uint16.", data.dtype)
+            if np.issubdtype(data.dtype, np.floating):
+                data = (data * 65535).astype(np.uint16)
+            else:
+                data = data.astype(np.uint16)
 
-            with h5py.File(path, "w") as f:
-                f.create_dataset(dataset_path, data=data, dtype=np.uint8)
-        else:
-            # Binary data - convert to uint16 if needed
-            if data.dtype != np.uint16:
-                logger.warning(f"Converting {data.dtype} to uint16...")
-                if data.dtype == np.float32 or data.dtype == np.float64:
-                    # Assume normalized [0, 1] data
-                    data = (data * 65535).astype(np.uint16)
-                else:
-                    data = data.astype(np.uint16)
-
-            # Create parent directory if needed
-            Path(path).parent.mkdir(parents=True, exist_ok=True)
-
-            with h5py.File(path, "w") as f:
-                f.create_dataset(dataset_path, data=data, dtype=np.uint16)
-
-        logger.info(f"Saved volume of shape {data.shape}")
-        logger.info(f"Value range: [{data.min()}, {data.max()}]")
+        return data, np.dtype(np.uint16)
 
     def normalize_slice(self, slice_data: np.ndarray) -> torch.Tensor:
-        """Convert slice to normalized tensor.
-
-        Args:
-            slice_data: Numpy array of shape (H, W)
-
-        Returns:
-            Normalized tensor of shape (1, 1, H, W)
-        """
+        """Convert a slice into a normalized BCHW tensor."""
         slice_data = slice_data.astype(np.float32)
 
         if self.normalize_range is None:
@@ -126,39 +102,16 @@ class TomoDataset:
         return slice_tensor
 
     def denormalize_prediction(self, pred: torch.Tensor) -> np.ndarray:
-        """Convert prediction tensor to appropriate output format.
-
-        Args:
-            pred: Prediction tensor from model, shape (1, C, H, W)
-
-        Returns:
-            For binary segmentation: Binary prediction as uint16 array
-            For multi-class segmentation: Class indices as uint8 array
-        """
-        # Check if multi-class segmentation (more than 1 channel)
+        """Convert a prediction tensor into its persisted array form."""
         if pred.size(1) > 1:
-            # Multi-class - get argmax
             pred_np = torch.argmax(pred, dim=1).cpu().numpy()
             return pred_np.astype(np.uint8)
-        else:
-            # Binary segmentation
-            # Remove batch and channel dimensions
-            pred_np = pred.squeeze().cpu().numpy()
 
-            # Convert to binary prediction
-            pred_binary = (pred_np > 0.5).astype(np.uint16) * 65535
-
-            return pred_binary
+        pred_np = pred.squeeze().cpu().numpy()
+        return (pred_np > 0.5).astype(np.uint16) * 65535
 
     def get_slice_stats(self, slice_data: np.ndarray) -> dict[str, float]:
-        """Get statistics for a slice.
-
-        Args:
-            slice_data: numpy array of any dtype
-
-        Returns:
-            dict with min, max, mean values
-        """
+        """Return basic statistics for a slice."""
         return {
             "min": float(slice_data.min()),
             "max": float(slice_data.max()),

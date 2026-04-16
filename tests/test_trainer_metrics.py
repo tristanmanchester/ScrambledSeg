@@ -8,6 +8,7 @@ import pytest
 
 torch = pytest.importorskip("torch")
 
+from scrambledSeg.training.config import VisualizationConfig
 from scrambledSeg.training.trainer import SegformerTrainer
 
 
@@ -111,7 +112,7 @@ def _build_trainer(tmp_path: Path) -> SegformerTrainer:
         val_dataloader=[],
         optimizer=optimizer,
         scheduler=None,
-        visualization={},
+        visualization=VisualizationConfig(),
         log_dir=str(tmp_path),
         test_mode=True,
         num_classes=2,

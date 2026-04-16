@@ -1,14 +1,8 @@
-"""
-Synthetic X-ray Computed Tomography (XCT) Slice Generator (Multi-Label)
+"""Synthetic multi-label XCT slice generation utilities.
 
-This script generates synthetic 2D XCT slices that simulate microstructural features
-of composite battery cathodes, specifically NMC particles in a solid electrolyte matrix.
-It also generates a corresponding multi-label segmentation image.
-
-Includes an optional forward projection/reconstruction step to simulate
-tomographic acquisition artifacts.
-
-Refactored to use a central configuration dictionary for easier parameter management.
+This module generates 2D XCT-like slices for composite battery cathodes together
+with aligned segmentation labels. It can optionally simulate forward projection
+and reconstruction artifacts.
 
 Label mapping for the segmentation image:
 - 0: Out of Reconstruction Volume
@@ -19,11 +13,10 @@ Label mapping for the segmentation image:
 
 from __future__ import annotations
 
-from copy import deepcopy
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from random import randint, uniform
-from typing import Dict, List, Optional, Tuple, TypeAlias, TypeVar
+from typing import Dict, List, Optional, Tuple
 
 import cv2
 import matplotlib.patches as mpatches
@@ -39,14 +32,6 @@ LABEL_OUT_OF_RECONSTRUCTION = 0
 LABEL_BACKGROUND = 1
 LABEL_ELECTROLYTE = 2
 LABEL_CATHODE = 3
-
-ConfigScalar: TypeAlias = int | float | bool | str | Path
-ConfigValue: TypeAlias = (
-    ConfigScalar | tuple[int, int] | list["ConfigValue"] | dict[str, "ConfigValue"]
-)
-ConfigDict: TypeAlias = dict[str, ConfigValue]
-DataclassT = TypeVar("DataclassT")
-
 
 @dataclass
 class ImageParameters:
@@ -80,11 +65,20 @@ class TomographyEffects:
     sinogram_blur_sigma: float = 1.0
 
 
-def dataclass_from_dict(cls: type[DataclassT], data: ConfigDict) -> DataclassT:
-    """Create a dataclass instance from a dictionary, ignoring extra keys."""
-    field_names = {f.name for f in cls.__dataclass_fields__.values()}
-    filtered_data = {k: v for k, v in data.items() if k in field_names}
-    return cls(**filtered_data)
+@dataclass
+class GenerationParameters:
+    output_dir: Path
+    num_slices: int
+    crop_size: int
+    randomize: bool
+    plot_single_slice: bool
+
+
+@dataclass
+class SliceGeneratorConfig:
+    generation: GenerationParameters
+    image: ImageParameters
+    effects: TomographyEffects
 
 
 class ParticleGrid:
@@ -440,7 +434,9 @@ class XCTSliceGenerator:
 
             if img_reconstructed_float.shape != img_ideal.shape:
                 print(
-                    f"Warning: Reconstructed size {img_reconstructed_float.shape} != ideal size {img_ideal.shape}. Cropping/Padding."
+                    "Warning: Reconstructed size "
+                    f"{img_reconstructed_float.shape} != ideal size {img_ideal.shape}. "
+                    "Cropping/Padding."
                 )
                 target_shape = np.array(img_ideal.shape)
                 current_shape = np.array(img_reconstructed_float.shape)
@@ -468,7 +464,8 @@ class XCTSliceGenerator:
 
                 if img_reconstructed_float.shape != img_ideal.shape:
                     print(
-                        f"Error: Size mismatch after crop/pad ({img_reconstructed_float.shape}). Resizing forcefully."
+                        "Error: Size mismatch after crop/pad "
+                        f"({img_reconstructed_float.shape}). Resizing forcefully."
                     )
                     img_reconstructed_float = cv2.resize(
                         img_reconstructed_float,
@@ -481,7 +478,8 @@ class XCTSliceGenerator:
 
         else:
             print(
-                "\nSkipping projection simulation. Applying post-reconstruction effects directly to ideal image..."
+                "\nSkipping projection simulation. Applying post-reconstruction "
+                "effects directly to ideal image..."
             )
             final_img = self._apply_post_reconstruction_effects(img_ideal.astype(float), recon_mask)
 
@@ -585,165 +583,173 @@ def plot_results(synthetic_slice: np.ndarray, label_image: np.ndarray):
     plt.show()
 
 
-def randomize_config(base_config: ConfigDict) -> ConfigDict:
-    """Create a randomized configuration derived from the base config."""
-    config = deepcopy(base_config)
+def _clamp(value: int | float, lower: int | float, upper: int | float) -> int | float:
+    return max(lower, min(upper, value))
 
-    img_params = config["image"]
-    img_params["inner_circle_grey"] += randint(-3000, 3000)
-    img_params["outer_circle_grey"] += randint(-3000, 3000)
+
+def default_config() -> SliceGeneratorConfig:
+    """Build the default synthetic slice generation configuration."""
+    return SliceGeneratorConfig(
+        generation=GenerationParameters(
+            output_dir=Path("./synthetic_data_simulated_recon"),
+            num_slices=100,
+            crop_size=2000,
+            randomize=True,
+            plot_single_slice=True,
+        ),
+        image=ImageParameters(
+            size=2560,
+            outer_circle_size=2560,
+            inner_circle_size=1860,
+            base_grey=0,
+            inner_circle_grey=40000,
+            outer_circle_grey=50000,
+            particle_grey_range=(2560, 17920),
+            num_particles=4000,
+            attraction_radius=30,
+            attraction_strength=1.0e5,
+            cell_size=100,
+        ),
+        effects=TomographyEffects(
+            blur_kernel=1,
+            noise_scale=20000.0,
+            noise_correlation_length=2,
+            poisson_noise_factor=20,
+            edge_brightness_factor=1.2,
+            edge_width=100,
+            sharpen_amount=0.3,
+            fractal_octaves=6,
+            fractal_persistence=0.8,
+            simulate_projection=True,
+            num_angles=800,
+            reconstruction_filter="shepp-logan",
+            sinogram_blur_sigma=5,
+        ),
+    )
+
+
+def randomize_config(base_config: SliceGeneratorConfig) -> SliceGeneratorConfig:
+    """Create a randomized configuration derived from a typed base config."""
+    image = base_config.image
+    effects = base_config.effects
+
     particle_min_delta = randint(-1000, 1000)
     particle_max_delta = randint(-5000, 5000)
-    new_min = img_params["particle_grey_range"][0] + particle_min_delta
-    new_max = img_params["particle_grey_range"][1] + particle_max_delta
-    img_params["particle_grey_range"] = (max(1, new_min), max(new_min + 1, new_max))
+    particle_range_min = image.particle_grey_range[0] + particle_min_delta
+    particle_range_max = image.particle_grey_range[1] + particle_max_delta
 
-    img_params["num_particles"] += randint(-500, 1000)
-    img_params["attraction_radius"] += randint(-10, 10)
-    img_params["attraction_strength"] *= uniform(0.8, 1.2)
-    img_params["cell_size"] += randint(-30, 30)
-
-    img_params["inner_circle_grey"] = max(1, min(65535, img_params["inner_circle_grey"]))
-    img_params["outer_circle_grey"] = max(1, min(65535, img_params["outer_circle_grey"]))
-    img_params["num_particles"] = max(100, img_params["num_particles"])
-    img_params["attraction_radius"] = max(5, img_params["attraction_radius"])
-    img_params["attraction_strength"] = max(0, img_params["attraction_strength"])
-    img_params["cell_size"] = max(20, min(200, img_params["cell_size"]))
-
-    effects_params = config["effects"]
-    blur_delta = randint(-4, 4) // 2 * 2
-    effects_params["blur_kernel"] += blur_delta
-    effects_params["noise_scale"] += uniform(-1000, 1000)
-    effects_params["noise_correlation_length"] += randint(-1, 1)
-    effects_params["poisson_noise_factor"] += uniform(-0.1, 0.1)
-    effects_params["edge_brightness_factor"] += uniform(-0.1, 0.1)
-    effects_params["edge_width"] += randint(-20, 20)
-    effects_params["sharpen_amount"] += uniform(-0.2, 0.2)
-    effects_params["fractal_octaves"] += randint(-1, 1)
-    effects_params["fractal_persistence"] += uniform(-0.1, 0.1)
-
-    if effects_params.get("simulate_projection", False):
-        effects_params["num_angles"] += randint(-300, 300)
-        effects_params["sinogram_blur_sigma"] += uniform(-0.5, 0.5)
-
-    effects_params["blur_kernel"] = max(3, min(15, effects_params["blur_kernel"]))
-    if effects_params["blur_kernel"] % 2 == 0:
-        effects_params["blur_kernel"] += 1
-
-    effects_params["noise_scale"] = max(100.0, effects_params["noise_scale"])
-    effects_params["noise_correlation_length"] = max(1, effects_params["noise_correlation_length"])
-    effects_params["poisson_noise_factor"] = max(
-        0.01, min(5.0, effects_params["poisson_noise_factor"])
-    )
-    effects_params["edge_brightness_factor"] = max(
-        1.0, min(1.5, effects_params["edge_brightness_factor"])
-    )
-    effects_params["edge_width"] = max(10, min(150, effects_params["edge_width"]))
-    effects_params["sharpen_amount"] = max(0.0, min(1.0, effects_params["sharpen_amount"]))
-    effects_params["fractal_octaves"] = max(1, min(8, effects_params["fractal_octaves"]))
-    effects_params["fractal_persistence"] = max(
-        0.1, min(0.9, effects_params["fractal_persistence"])
+    randomized_image = replace(
+        image,
+        inner_circle_grey=int(_clamp(image.inner_circle_grey + randint(-3000, 3000), 1, 65535)),
+        outer_circle_grey=int(_clamp(image.outer_circle_grey + randint(-3000, 3000), 1, 65535)),
+        particle_grey_range=(
+            max(1, particle_range_min),
+            max(particle_range_min + 1, particle_range_max),
+        ),
+        num_particles=max(100, image.num_particles + randint(-500, 1000)),
+        attraction_radius=max(5, image.attraction_radius + randint(-10, 10)),
+        attraction_strength=max(0.0, image.attraction_strength * uniform(0.8, 1.2)),
+        cell_size=int(_clamp(image.cell_size + randint(-30, 30), 20, 200)),
     )
 
-    if effects_params.get("simulate_projection", False):
-        effects_params["num_angles"] = max(180, min(3600, effects_params["num_angles"]))
-        effects_params["sinogram_blur_sigma"] = max(
-            0.1, min(5.0, effects_params["sinogram_blur_sigma"])
+    randomized_blur_kernel = int(_clamp(effects.blur_kernel + (randint(-4, 4) // 2 * 2), 3, 15))
+    if randomized_blur_kernel % 2 == 0:
+        randomized_blur_kernel += 1
+
+    randomized_effects = replace(
+        effects,
+        blur_kernel=randomized_blur_kernel,
+        noise_scale=max(100.0, effects.noise_scale + uniform(-1000, 1000)),
+        noise_correlation_length=max(1, effects.noise_correlation_length + randint(-1, 1)),
+        poisson_noise_factor=_clamp(
+            effects.poisson_noise_factor + uniform(-0.1, 0.1), 0.01, 5.0
+        ),
+        edge_brightness_factor=_clamp(
+            effects.edge_brightness_factor + uniform(-0.1, 0.1), 1.0, 1.5
+        ),
+        edge_width=int(_clamp(effects.edge_width + randint(-20, 20), 10, 150)),
+        sharpen_amount=_clamp(effects.sharpen_amount + uniform(-0.2, 0.2), 0.0, 1.0),
+        fractal_octaves=int(_clamp(effects.fractal_octaves + randint(-1, 1), 1, 8)),
+        fractal_persistence=_clamp(
+            effects.fractal_persistence + uniform(-0.1, 0.1), 0.1, 0.9
+        ),
+    )
+
+    if randomized_effects.simulate_projection:
+        randomized_effects = replace(
+            randomized_effects,
+            num_angles=int(_clamp(effects.num_angles + randint(-300, 300), 180, 3600)),
+            sinogram_blur_sigma=_clamp(
+                effects.sinogram_blur_sigma + uniform(-0.5, 0.5), 0.1, 5.0
+            ),
+            reconstruction_filter=(
+                effects.reconstruction_filter
+                if effects.reconstruction_filter
+                in {"shepp-logan", "ram-lak", "cosine", "hamming", "hann"}
+                else "shepp-logan"
+            ),
         )
-        valid_filters = ["shepp-logan", "ram-lak", "cosine", "hamming", "hann"]
-        if effects_params["reconstruction_filter"] not in valid_filters:
-            effects_params["reconstruction_filter"] = "shepp-logan"
 
-    return config
+    return SliceGeneratorConfig(
+        generation=base_config.generation,
+        image=randomized_image,
+        effects=randomized_effects,
+    )
 
 
-if __name__ == "__main__":
+def _crop_generated_images(
+    synthetic_slice: np.ndarray, label_image: np.ndarray, *, crop_size: int, image_size: int
+) -> tuple[np.ndarray, np.ndarray]:
+    if crop_size > 0 and crop_size < image_size:
+        print(f"\nCropping images to center {crop_size}x{crop_size} pixels...")
+        start_x = (image_size - crop_size) // 2
+        start_y = (image_size - crop_size) // 2
+        end_x = start_x + crop_size
+        end_y = start_y + crop_size
+        return (
+            synthetic_slice[start_y:end_y, start_x:end_x],
+            label_image[start_y:end_y, start_x:end_x],
+        )
+    if crop_size > 0 and crop_size >= image_size:
+        print(f"\nSkipping cropping as crop_size ({crop_size}) >= image size ({image_size}).")
+        return synthetic_slice, label_image
+
+    print("\nSkipping cropping as crop_size is not set or invalid.")
+    return synthetic_slice, label_image
+
+
+def generate_slices(config: SliceGeneratorConfig) -> None:
+    """Generate one or more synthetic slices using the supplied configuration."""
     print("Generating synthetic XCT slice with multi-label mask...")
 
-    config = {
-        "generation": {
-            "output_dir": Path("./synthetic_data_simulated_recon"),
-            "num_slices": 100,
-            "crop_size": 2000,
-            "randomize": True,
-            "plot_single_slice": True,
-        },
-        "image": {
-            "size": 2560,
-            "outer_circle_size": 2560,
-            "inner_circle_size": 1860,
-            "base_grey": 0,
-            "inner_circle_grey": 40000,
-            "outer_circle_grey": 50000,
-            "particle_grey_range": (2560, 17920),
-            "num_particles": 4000,
-            "attraction_radius": 30,
-            "attraction_strength": 1.0e5,
-            "cell_size": 100,
-        },
-        "effects": {
-            "blur_kernel": 1,
-            "noise_scale": 20000.0,
-            "noise_correlation_length": 2,
-            "poisson_noise_factor": 20,
-            "edge_brightness_factor": 1.2,
-            "edge_width": 100,
-            "sharpen_amount": 0.3,
-            "fractal_octaves": 6,
-            "fractal_persistence": 0.8,
-            "simulate_projection": True,
-            "num_angles": 800,
-            "reconstruction_filter": "shepp-logan",
-            "sinogram_blur_sigma": 5,
-        },
-    }
-
-    output_dir = Path(config["generation"]["output_dir"])
+    output_dir = config.generation.output_dir
     output_dir.mkdir(parents=True, exist_ok=True)
-    num_slices_to_generate = config["generation"]["num_slices"]
 
-    for i in range(num_slices_to_generate):
-        print(f"\n--- Generating Slice {i + 1}/{num_slices_to_generate} ---")
+    for index in range(config.generation.num_slices):
+        print(f"\n--- Generating Slice {index + 1}/{config.generation.num_slices} ---")
 
-        if config["generation"]["randomize"]:
-            slice_config = randomize_config(config)
-            print("\nUsing Randomized Parameters:")
-        else:
-            slice_config = deepcopy(config)
-            print("\nUsing Base Parameters:")
+        slice_config = randomize_config(config) if config.generation.randomize else config
+        print(
+            "\nUsing Randomized Parameters:"
+            if config.generation.randomize
+            else "\nUsing Base Parameters:"
+        )
 
-        image_params = dataclass_from_dict(ImageParameters, slice_config["image"])
-        tomography_effects = dataclass_from_dict(TomographyEffects, slice_config["effects"])
-
-        generator = XCTSliceGenerator(image_params, tomography_effects)
+        generator = XCTSliceGenerator(slice_config.image, slice_config.effects)
         synthetic_slice, label_image = generator.generate()
+        synthetic_slice_cropped, label_image_cropped = _crop_generated_images(
+            synthetic_slice,
+            label_image,
+            crop_size=slice_config.generation.crop_size,
+            image_size=slice_config.image.size,
+        )
 
-        crop_size = slice_config["generation"]["crop_size"]
-        image_size = slice_config["image"]["size"]
-
-        if crop_size > 0 and crop_size < image_size:
-            print(f"\nCropping images to center {crop_size}x{crop_size} pixels...")
-            start_x = (image_size - crop_size) // 2
-            start_y = (image_size - crop_size) // 2
-            end_x = start_x + crop_size
-            end_y = start_y + crop_size
-            synthetic_slice_cropped = synthetic_slice[start_y:end_y, start_x:end_x]
-            label_image_cropped = label_image[start_y:end_y, start_x:end_x]
-        elif crop_size > 0 and crop_size >= image_size:
-            print(f"\nSkipping cropping as crop_size ({crop_size}) >= image size ({image_size}).")
-            synthetic_slice_cropped = synthetic_slice
-            label_image_cropped = label_image
-        else:
-            print("\nSkipping cropping as crop_size is not set or invalid.")
-            synthetic_slice_cropped = synthetic_slice
-            label_image_cropped = label_image
-
-        if num_slices_to_generate == 1 and config["generation"]["plot_single_slice"]:
+        if config.generation.num_slices == 1 and config.generation.plot_single_slice:
             print("\nPlotting results...")
             plot_results(synthetic_slice_cropped, label_image_cropped)
 
-        slice_filename = output_dir / f"synthetic_slice_{i:03d}.tif"
-        label_filename = output_dir / f"label_image_{i:03d}.tif"
+        slice_filename = output_dir / f"synthetic_slice_{index:03d}.tif"
+        label_filename = output_dir / f"label_image_{index:03d}.tif"
 
         print(f"\nSaving greyscale slice to: {slice_filename}")
         imwrite(slice_filename, synthetic_slice_cropped, imagej=True, metadata={"axes": "YX"})
@@ -756,4 +762,13 @@ if __name__ == "__main__":
             metadata={"axes": "YX"},
         )
 
-    print(f"\nFinished generating {num_slices_to_generate} slice(s) in '{output_dir}'.")
+    print(f"\nFinished generating {config.generation.num_slices} slice(s) in '{output_dir}'.")
+
+
+def main() -> None:
+    """Run the default synthetic slice generation workflow."""
+    generate_slices(default_config())
+
+
+if __name__ == "__main__":
+    main()

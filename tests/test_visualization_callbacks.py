@@ -80,6 +80,17 @@ def test_callback_logs_full_train_and_validation_metrics(tmp_path: Path) -> None
             "recall": np.array([0.15, 0.26, 0.37], dtype=np.float32),
             "f1": ["tensor(0.16)", "tensor(0.27, device='cuda:0')", "0.38"],
         },
+        "training_metrics": {
+            "batch_time": 0.5,
+            "samples_per_second": 32.0,
+            "learning_rate": 0.001,
+            "gradient_norm": 1.2,
+            "avg_gradient_norm": 0.12,
+            "gpu_memory_used_gb": 2.5,
+            "gpu_memory_total_gb": 3.0,
+            "cpu_percent": 45.0,
+            "total_samples_seen": 64,
+        },
     }
 
     callback.on_train_batch_end(
@@ -133,6 +144,9 @@ def test_callback_logs_full_train_and_validation_metrics(tmp_path: Path) -> None
     assert train_row["train_precision"] == pytest.approx(0.52)
     assert train_row["train_recall_class_2"] == pytest.approx(0.37)
     assert train_row["train_f1_class_1"] == pytest.approx(0.27)
+    assert train_row["train_learning_rate"] == pytest.approx(0.001)
+    assert train_row["train_samples_per_second"] == pytest.approx(32.0)
+    assert train_row["train_cpu_percent"] == pytest.approx(45.0)
 
     assert val_row["val_loss"] == pytest.approx(0.95)
     assert val_row["val_precision"] == pytest.approx(0.61)

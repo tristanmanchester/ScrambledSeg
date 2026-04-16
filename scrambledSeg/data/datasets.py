@@ -66,8 +66,10 @@ class SynchrotronDataset(Dataset):
             self._initialize_dataset_metadata()
             if self.cache_size > 0:
                 self._preload_cache()
-        except Exception as e:
-            raise DatasetError(f"Failed to initialize dataset: {str(e)}")
+        except DatasetError:
+            raise
+        except (OSError, RuntimeError, ValueError, tifffile.TiffFileError) as exc:
+            raise DatasetError(f"Failed to initialize dataset: {exc}") from exc
 
     def _setup_data_directories(self):
         """Set up and validate data directories and files."""
@@ -118,8 +120,10 @@ class SynchrotronDataset(Dataset):
                 label = np.ascontiguousarray(tifffile.imread(str(self.label_files[idx])))
                 file_unique = np.unique(label)
                 all_unique_values.update(file_unique)
-            except Exception as e:
-                logger.warning(f"Could not scan file {self.label_files[idx]} for class values: {e}")
+            except (OSError, ValueError, tifffile.TiffFileError) as exc:
+                raise DatasetError(
+                    f"Could not scan file {self.label_files[idx]} for class values: {exc}"
+                ) from exc
 
         all_unique_values = np.array(sorted(all_unique_values))
 
@@ -304,11 +308,14 @@ class SynchrotronDataset(Dataset):
 
     def get_items_by_filenames(self, filenames: list[str]) -> list[int]:
         """Get dataset indices for given filenames."""
-        raise NotImplementedError
+        visible_names = self.get_all_filenames()
+        index_by_name = {name: idx for idx, name in enumerate(visible_names)}
+
+        return [index_by_name[Path(filename).stem] for filename in filenames]
 
     def get_all_filenames(self) -> list[str]:
         """Get all filenames in the dataset."""
-        raise NotImplementedError
+        return [path.stem for path in self.data_files]
 
     def __del__(self):
         """Clean up when the dataset is deleted."""

@@ -108,3 +108,8 @@ slice_generator.py
 .pytest_cache/
 .coverage*
 .ruff_cache/
+
+# Desloppify local state
+.desloppify/
+.agents/
+.factory/

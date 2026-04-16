@@ -6,7 +6,7 @@ import pytest
 
 np = pytest.importorskip("numpy")
 
-import slice_generator_projection as sgp
+from scrambledSeg.generation import slice_generator_projection as sgp
 
 
 def test_slice_generator_uses_distinct_documented_label_values() -> None:

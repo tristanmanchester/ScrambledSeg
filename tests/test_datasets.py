@@ -126,3 +126,33 @@ def test_synchrotron_dataset_getitem_raises_instead_of_skipping_bad_samples(
 
     with pytest.raises(DatasetError, match=r"Failed to load sample 0 .*000\.tif"):
         dataset[0]
+
+
+def test_synchrotron_dataset_init_chains_underlying_failure(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """Initialization should preserve the root cause when metadata loading fails."""
+
+    dataset_root = _write_dataset(tmp_path, n_samples=1)
+
+    def _broken_load(self, idx: int):
+        raise ValueError("corrupt metadata payload")
+
+    monkeypatch.setattr(SynchrotronDataset, "_load_from_file", _broken_load)
+
+    with pytest.raises(DatasetError, match="Failed to initialize dataset") as excinfo:
+        SynchrotronDataset(dataset_root, split="train", cache_size=0)
+
+    assert isinstance(excinfo.value.__cause__, ValueError)
+    assert str(excinfo.value.__cause__) == "corrupt metadata payload"
+
+
+def test_synchrotron_dataset_exposes_filename_lookup_helpers(tmp_path: Path) -> None:
+    """Filename helpers should reflect the selected dataset files."""
+
+    dataset_root = _write_dataset(tmp_path, n_samples=4)
+    dataset = SynchrotronDataset(dataset_root, split="train", cache_size=0)
+
+    assert dataset.get_all_filenames() == ["000", "001", "002", "003"]
+    assert dataset.get_items_by_filenames(["003.tif", "001"]) == [3, 1]

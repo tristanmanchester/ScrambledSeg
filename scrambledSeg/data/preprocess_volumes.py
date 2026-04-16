@@ -1,7 +1,8 @@
-"""Module for preprocessing 3D volumes into 2D slices for training."""
+"""Preprocess paired 3D volumes into tiled 2D datasets for training."""
 
+import argparse
 import logging
-import os
+import re
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 from typing import Dict, List, NamedTuple, Optional, Tuple, TypeAlias
@@ -11,15 +12,7 @@ import numpy as np
 import tifffile
 from tqdm import tqdm
 
-if __package__ in {None, ""}:  # pragma: no cover - direct script execution fallback
-    import sys
-
-    project_root = Path(__file__).resolve().parents[2]
-    if str(project_root) not in sys.path:
-        sys.path.insert(0, str(project_root))
-    from scrambledSeg.axis import Axis, AxisPredictor
-else:
-    from ..axis import Axis, AxisPredictor
+from ..axis import Axis, AxisPredictor
 
 logger = logging.getLogger(__name__)
 
@@ -27,6 +20,7 @@ VolumePaths: TypeAlias = List[str]
 VolumePathPair: TypeAlias = Tuple[str, str]
 SplitRatios: TypeAlias = Dict[str, float]
 DEFAULT_SPLIT_RATIOS: SplitRatios = {"train": 0.8, "val": 0.1, "test": 0.1}
+DEFAULT_TILE_OVERLAP = 32
 
 
 class SliceInfo(NamedTuple):
@@ -53,11 +47,9 @@ def load_volume(file_path: str) -> np.ndarray:
             volume = f["data"][:]
     elif file_ext in [".tif", ".tiff"]:
         volume = tifffile.imread(file_path)
-        # Ensure 3D array
         if volume.ndim == 2:
             volume = volume[np.newaxis, ...]
         elif volume.ndim == 4:
-            # Assume last dimension is channel, take first channel
             volume = volume[..., 0]
     else:
         raise ValueError(f"Unsupported file format: {file_ext}")
@@ -70,9 +62,9 @@ def extract_tiles_from_slice(
     label_path: str,
     output_dir: Path,
     tile_size: int = 256,
-    overlap: int = 64,
+    overlap: int = DEFAULT_TILE_OVERLAP,
 ) -> List[SliceInfo]:
-    """Extract overlapping tiles from 3D volumes by extracting all 2D slices from all axes.
+    """Extract overlapping tiles from every orthogonal slice of a paired volume.
 
     Args:
         data_path: Path to data volume file (H5 or TIFF)
@@ -89,51 +81,37 @@ def extract_tiles_from_slice(
 
     tile_info = []
     axis_handler = AxisPredictor()
-
-    # Load 3D volumes
     data_volume = load_volume(data_path)
     label_volume = load_volume(label_path)
 
-    # Ensure both are 3D volumes
     if data_volume.ndim != 3 or label_volume.ndim != 3:
         raise ValueError(
             f"Expected 3D volumes, got data: {data_volume.ndim}D, label: {label_volume.ndim}D"
         )
 
-    # Verify shapes match
     if data_volume.shape != label_volume.shape:
         raise ValueError(f"Data shape {data_volume.shape} != Label shape {label_volume.shape}")
 
-    # Extract slices from all three axes
     for axis in [Axis.XY, Axis.YZ, Axis.XZ]:
         axis_name = axis.name.lower()
-
-        # Get the number of slices for this axis
         volume_shape = axis_handler.get_volume_shape(axis, data_volume.shape)
         num_slices = volume_shape[0]
 
         for slice_idx in range(num_slices):
-            # Extract 2D slices from the volume
             data_slice = axis_handler.get_slice(data_volume, axis, slice_idx)
             label_slice = axis_handler.get_slice(label_volume, axis, slice_idx)
 
-            # Verify shapes match
             if data_slice.shape != label_slice.shape:
                 raise ValueError(
                     f"Data shape {data_slice.shape} != Label shape {label_slice.shape}"
                 )
 
-            # Normalize data if needed
             if data_slice.max() > 1.0:
                 data_slice = data_slice.astype(np.float32) / 65535.0
 
-            # Convert labels to uint8
             label_slice = label_slice.astype(np.uint8)
-
-            # Get dimensions
             height, width = data_slice.shape
 
-            # Calculate tile positions with overlap
             stride = tile_size - overlap
             tile_positions = []
 
@@ -141,7 +119,6 @@ def extract_tiles_from_slice(
                 for x in range(0, width - tile_size + 1, stride):
                     tile_positions.append((y, x))
 
-            # Add edge tiles if needed
             if height % stride != 0:
                 y = max(0, height - tile_size)
                 for x in range(0, width - tile_size + 1, stride):
@@ -173,8 +150,8 @@ def extract_tiles_from_slice(
                 data_filename = output_dir / "data" / f"{tile_name}.tif"
                 label_filename = output_dir / "labels" / f"{tile_name}.tif"
 
-                os.makedirs(data_filename.parent, exist_ok=True)
-                os.makedirs(label_filename.parent, exist_ok=True)
+                data_filename.parent.mkdir(parents=True, exist_ok=True)
+                label_filename.parent.mkdir(parents=True, exist_ok=True)
 
                 tifffile.imwrite(str(data_filename), data_tile)
                 tifffile.imwrite(str(label_filename), label_tile)
@@ -186,37 +163,35 @@ def extract_tiles_from_slice(
     return tile_info
 
 
-def calculate_total_tiles(data_paths: VolumePaths, tile_size: int = 256, overlap: int = 64) -> int:
+def calculate_total_tiles(
+    data_paths: VolumePaths,
+    tile_size: int = 256,
+    overlap: int = DEFAULT_TILE_OVERLAP,
+) -> int:
     """Calculate approximate total number of tiles across all slices from all axes."""
     total = 0
     axis_handler = AxisPredictor()
 
     for data_path in data_paths:
-        # Load volume
         volume_data = load_volume(data_path)
 
         if volume_data.ndim != 3:
             raise ValueError(f"Expected 3D volume, got {volume_data.ndim}D")
 
-        # Calculate tiles for all three axes
         for axis in [Axis.XY, Axis.YZ, Axis.XZ]:
-            # Get the number of slices for this axis
             volume_shape = axis_handler.get_volume_shape(axis, volume_data.shape)
             num_slices = volume_shape[0]
             slice_height, slice_width = volume_shape[1], volume_shape[2]
 
-            # Calculate tiles per slice
             stride = tile_size - overlap
             tiles_y = max(1, (slice_height - overlap) // stride)
             tiles_x = max(1, (slice_width - overlap) // stride)
 
-            # Add extra tiles for edges if needed
             if slice_height % stride != 0:
                 tiles_y += 1
             if slice_width % stride != 0:
                 tiles_x += 1
 
-            # Add tiles for all slices in this axis
             total += num_slices * tiles_y * tiles_x
 
     return total
@@ -237,12 +212,11 @@ def create_datasets(
     split_ratios: Optional[SplitRatios] = None,
     random_seed: int = 42,
     tile_size: int = 256,
-    overlap: int = 64,
+    overlap: int = DEFAULT_TILE_OVERLAP,
 ) -> None:
-    """Create datasets with correct pre-allocated sizes, using 24 threads in parallel."""
+    """Create train/val/test tile datasets from paired 3D input volumes."""
     split_ratios = DEFAULT_SPLIT_RATIOS.copy() if split_ratios is None else split_ratios
 
-    # Validate split ratios
     if abs(sum(split_ratios.values()) - 1.0) > 1e-6:
         raise ValueError("Split ratios must sum to 1")
 
@@ -251,20 +225,16 @@ def create_datasets(
 
     np.random.seed(random_seed)
 
-    # Calculate total tiles
-    total_tiles = calculate_total_tiles(data_paths)
+    total_tiles = calculate_total_tiles(data_paths, tile_size=tile_size, overlap=overlap)
     logger.info(f"Total number of tiles across all slices: {total_tiles}")
 
-    # Add a safety margin of 5%
     total_tiles = int(total_tiles * 1.05)
     logger.info(f"Allocating space for {total_tiles} tiles (including 5% safety margin)")
 
-    # Create output directories
     for split_name in split_ratios.keys():
         (output_dir / split_name / "data").mkdir(parents=True, exist_ok=True)
         (output_dir / split_name / "labels").mkdir(parents=True, exist_ok=True)
 
-    # Parallel processing of slices
     tasks = [
         (
             data_path,
@@ -283,19 +253,17 @@ def create_datasets(
         ):
             results.append(f.result())
 
-    # Assignment and file moving (sequential, as file moving may not be thread-safe)
     for data_path, label_path, slice_info in results:
         n_slices = len(slice_info)
         split_probs = np.array([split_ratios[split] for split in split_ratios.keys()])
-        split_probs /= split_probs.sum()  # Normalize
+        split_probs /= split_probs.sum()
         assignments = np.random.choice(list(split_ratios.keys()), size=n_slices, p=split_probs)
 
-        for i, (split_name, info) in enumerate(zip(assignments, slice_info)):
+        for split_name, info in zip(assignments, slice_info):
             base_name = info.volume_id
             orient_name = info.orientation
             tile_idx = info.slice_idx
 
-            # The actual filename format we create
             tile_name = f"{base_name}_{orient_name}_tile{tile_idx:03d}"
             data_filename = output_dir / "data" / f"{tile_name}.tif"
             label_filename = output_dir / "labels" / f"{tile_name}.tif"
@@ -303,10 +271,9 @@ def create_datasets(
             new_data_filename = output_dir / split_name / "data" / f"{tile_name}.tif"
             new_label_filename = output_dir / split_name / "labels" / f"{tile_name}.tif"
 
-            # Check if source files exist before trying to move them
             if data_filename.exists() and label_filename.exists():
-                os.rename(data_filename, new_data_filename)
-                os.rename(label_filename, new_label_filename)
+                data_filename.rename(new_data_filename)
+                label_filename.rename(new_label_filename)
             else:
                 raise FileNotFoundError(
                     "Expected extracted tile files before dataset split assignment, but missing "
@@ -324,7 +291,6 @@ def find_matching_volume_pairs(data_dir: Path, label_dir: Path) -> List[VolumePa
     2. Files with different naming patterns but matching indices
        (e.g., 'synthetic_slice_000.tif' and 'label_image_000.tif')
     """
-    # Get all tiff and h5 files
     data_files = []
     for ext in ["*.h5", "*.tif", "*.tiff"]:
         data_files.extend(list(data_dir.glob(ext)))
@@ -333,24 +299,17 @@ def find_matching_volume_pairs(data_dir: Path, label_dir: Path) -> List[VolumePa
     for ext in ["*.h5", "*.tif", "*.tiff"]:
         label_files.extend(list(label_dir.glob(ext)))
 
-    # First try: Match by identical stems
     data_by_stem = {f.stem: f for f in data_files}
     label_by_stem = {f.stem: f for f in label_files}
     common_stems = set(data_by_stem.keys()) & set(label_by_stem.keys())
 
     if common_stems:
-        # Return sorted pairs of full paths with matching stems
         return sorted(
             [(str(data_by_stem[stem]), str(label_by_stem[stem])) for stem in common_stems]
         )
 
-    # Second try: Match by numerical indices
-    # Extract indices from filenames using regex
-    import re
-
     data_by_index = {}
     for f in data_files:
-        # Try to find a number in the filename
         match = re.search(r"(\d+)", f.stem)
         if match:
             index = match.group(1)
@@ -363,28 +322,25 @@ def find_matching_volume_pairs(data_dir: Path, label_dir: Path) -> List[VolumePa
             index = match.group(1)
             label_by_index[index] = f
 
-    # Find common indices
     common_indices = set(data_by_index.keys()) & set(label_by_index.keys())
 
     if common_indices:
-        # Return sorted pairs of full paths with matching indices
         return sorted(
             [(str(data_by_index[idx]), str(label_by_index[idx])) for idx in common_indices]
         )
 
-    # If no matches found by either method
     raise ValueError(
         f"No matching volume files found in {data_dir} and {label_dir}. "
         "Files should either have identical names or contain matching numerical indices."
     )
 
 
-def build_argument_parser():
+def build_argument_parser() -> argparse.ArgumentParser:
     """Create the preprocessing CLI argument parser."""
 
-    import argparse
-
-    parser = argparse.ArgumentParser(description="Preprocess 2D slices into overlapping tiles")
+    parser = argparse.ArgumentParser(
+        description="Preprocess paired 3D H5/TIFF volumes into train/val/test tile datasets."
+    )
     parser.add_argument(
         "--data-dir",
         type=str,
@@ -404,7 +360,12 @@ def build_argument_parser():
         help="Directory to save tile datasets",
     )
     parser.add_argument("--tile-size", type=int, default=512, help="Size of tiles (square)")
-    parser.add_argument("--overlap", type=int, default=32, help="Overlap between adjacent tiles")
+    parser.add_argument(
+        "--overlap",
+        type=int,
+        default=DEFAULT_TILE_OVERLAP,
+        help=f"Overlap between adjacent tiles (default: {DEFAULT_TILE_OVERLAP})",
+    )
     parser.add_argument("--val-ratio", type=float, default=0.1, help="Ratio of validation set")
     parser.add_argument("--test-ratio", type=float, default=0.1, help="Ratio of test set")
     parser.add_argument("--seed", type=int, default=69, help="Random seed for reproducibility")

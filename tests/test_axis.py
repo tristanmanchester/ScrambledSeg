@@ -6,7 +6,7 @@ import pytest
 
 np = pytest.importorskip("numpy")
 
-from scrambledSeg.prediction.axis import Axis, AxisPredictor
+from scrambledSeg.axis import Axis, AxisPredictor
 
 
 def test_axis_predictor_uses_three_distinct_slice_families() -> None:
